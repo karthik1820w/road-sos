@@ -1,0 +1,28 @@
+# RoadSOS Dependencies (Node.js/npm)
+# Install using: npm install
+
+@google/genai
+@supabase/supabase-js
+@vis.gl/react-google-maps
+dotenv
+express
+lucide-react
+motion
+react
+react-dom
+recharts
+twilio
+
+# Dev Dependencies
+@types/express
+@types/node
+@types/react
+@types/react-dom
+@vitejs/plugin-react
+autoprefixer
+esbuild
+postcss
+tailwindcss
+tsx
+typescript
+vite

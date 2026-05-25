@@ -1,0 +1,14 @@
+{
+  "name": "Road-SOS",
+  "description": "Location-based emergency network providing instant access to trauma centres, ambulance services, vehicle rescue, and police stations with automated crash detection and voice AI dispatch.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation",
+    "accelerometer",
+    "gyroscope"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
