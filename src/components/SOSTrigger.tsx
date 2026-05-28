@@ -15,6 +15,7 @@ export const SOSTrigger: React.FC<SOSTriggerProps> = ({ onTrigger, isPulsing = f
   const holdTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownTimerRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number>(0);
+  const vibrationTriggeredRef = useRef<boolean>(false);
 
   const HOLD_DURATION = 5000; // 5 seconds
 
@@ -24,11 +25,20 @@ export const SOSTrigger: React.FC<SOSTriggerProps> = ({ onTrigger, isPulsing = f
     setPressState('PRESSING');
     setHoldProgress(0);
     startTimeRef.current = Date.now();
+    vibrationTriggeredRef.current = false;
 
     holdTimerRef.current = setInterval(() => {
       const elapsed = Date.now() - startTimeRef.current;
       const progress = Math.min((elapsed / HOLD_DURATION) * 100, 100);
       setHoldProgress(progress);
+
+      if (elapsed >= 3000 && !vibrationTriggeredRef.current) {
+        vibrationTriggeredRef.current = true;
+        if ('vibrate' in navigator) {
+          // Unique long-vibration pattern
+          navigator.vibrate([1000, 200, 1000, 200, 1000]);
+        }
+      }
 
       if (elapsed >= HOLD_DURATION) {
         clearInterval(holdTimerRef.current!);
@@ -43,6 +53,9 @@ export const SOSTrigger: React.FC<SOSTriggerProps> = ({ onTrigger, isPulsing = f
       if (holdTimerRef.current) clearInterval(holdTimerRef.current);
       setPressState('IDLE');
       setHoldProgress(0);
+      if ('vibrate' in navigator) {
+        navigator.vibrate(0); // Cancel any ongoing vibration
+      }
     }
   };
 

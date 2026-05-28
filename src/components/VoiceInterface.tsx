@@ -143,7 +143,9 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
       };
 
       recognitionRef.current.onerror = (event: any) => {
-        console.error("[VOICE DEBUG] Speech Error:", event.error);
+        if (event.error !== 'aborted' && event.error !== 'no-speech') {
+          console.error("[VOICE DEBUG] Speech Error:", event.error);
+        }
         if (event.error === 'not-allowed') {
           console.error("[VOICE DEBUG] Permission denied by OS/Browser.");
           setError("Microphone access denied. Please enable it in browser settings.");
