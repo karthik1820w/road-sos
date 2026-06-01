@@ -168,7 +168,8 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
     return () => {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       if (recognitionRef.current) {
-        recognitionRef.current.stop();
+        recognitionRef.current.onend = null;
+        try { recognitionRef.current.abort(); } catch(e) {}
       }
     };
   }, [state, emergencyState]);
@@ -693,6 +694,7 @@ If information is received and ambulance is sent press 1`;
                   onClick={() => {
                     setEmergencyState('NORMAL');
                     setState('IDLE');
+                    onBack();
                   }}
                   className="px-6 py-4 bg-slate-900 hover:bg-slate-800 text-slate-400 font-bold text-xs uppercase tracking-widest rounded-xl transition-colors"
                 >
@@ -820,6 +822,7 @@ If information is received and ambulance is sent press 1`;
                 onClick={() => {
                   setEmergencyState('NORMAL');
                   setState('IDLE');
+                  onBack();
                 }}
                 className="px-6 py-3 bg-white text-black text-xs font-black uppercase tracking-widest rounded-xl hover:bg-slate-100 transition-colors"
               >

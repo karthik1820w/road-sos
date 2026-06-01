@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { APIProvider, Map, AdvancedMarker, Pin, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 import { MapPin, Building2, Truck, Loader2, Navigation, Crosshair, Search, Phone, BedSingle, Share2, X, Info } from 'lucide-react';
 
@@ -127,20 +127,25 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
   };
 
   const performMapSearch = async (query: string) => {
-    if (!map || !query || !API_KEY) return;
+    if (!map || !query) return;
     setSearchQuery(query);
     setShowSuggestions(false);
 
     try {
-      const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      const res = await fetch('/api/places/search', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Goog-Api-Key': API_KEY,
           'X-Goog-FieldMask': 'places.displayName,places.location,places.formattedAddress'
         },
         body: JSON.stringify({
-          textQuery: query
+          textQuery: query,
+          locationBias: {
+            circle: {
+              center: { latitude: center.lat, longitude: center.lng },
+              radius: 4000.0 // 4km radius bias
+            }
+          }
         })
       });
       const data = await res.json();
@@ -190,18 +195,41 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
 
   // (Removed internal DirectionsRenderer init, polyline is managed via computeRoutes now)
 
+  const lastFetchedCenterRef = useRef<{ lat: number, lng: number } | null>(null);
+
   useEffect(() => {
     if (!hasValidKey) return;
     let isMounted = true;
     
+    const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+      const R = 6371; // km
+      const p = Math.PI / 180;
+      const a = 0.5 - Math.cos((lat2 - lat1) * p)/2 + 
+                Math.cos(lat1 * p) * Math.cos(lat2 * p) * 
+                (1 - Math.cos((lon2 - lon1) * p))/2;
+      return 2 * R * Math.asin(Math.sqrt(a));
+    };
+
+    if (lastFetchedCenterRef.current) {
+      const dist = calculateDistance(
+        center.lat, center.lng, 
+        lastFetchedCenterRef.current.lat, lastFetchedCenterRef.current.lng
+      );
+      // only refetch if moved more than 1km
+      if (dist < 1.0) {
+        return;
+      }
+    }
+    
+    lastFetchedCenterRef.current = { lat: center.lat, lng: center.lng };
+
     const fetchServices = async () => {
       setIsLoading(true);
       try {
-        const response = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+        const response = await fetch('/api/places/nearby', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Goog-Api-Key': API_KEY,
             'X-Goog-FieldMask': 'places.displayName,places.location'
           },
           body: JSON.stringify({
@@ -210,7 +238,7 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
             locationRestriction: {
               circle: {
                 center: { latitude: center.lat, longitude: center.lng },
-                radius: 5000.0
+                radius: 10000.0
               }
             }
           })

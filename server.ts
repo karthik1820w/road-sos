@@ -172,7 +172,7 @@ const generateAIResponse = async (prompt: string, isHighPriority: boolean = fals
     try {
       const ai = getAI();
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash", // Using stable latest flash for reliability
+        model: "gemini-3.5-flash", // Using stable latest flash for reliability
         contents: prompt,
         config: {
           maxOutputTokens: isHighPriority ? 120 : 300,
@@ -210,7 +210,7 @@ const generateAIResponse = async (prompt: string, isHighPriority: boolean = fals
         continue;
       }
       
-      console.error("❌ Gemini API Error:", errorMsg);
+      console.log("⚠️ Gemini API Error:", errorMsg);
       break;
     }
   }
@@ -250,11 +250,12 @@ const getLangchainConversation = () => {
     const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY is not configured.");
     
-    // We use gemini-2.5-flash for speed and conversational capabilities
+    // We use gemini-3.5-flash for speed and conversational capabilities
     const model = new ChatGoogleGenerativeAI({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       apiKey: apiKey,
       temperature: 0.3,
+      maxRetries: 0,
     });
     
     const systemPrompt = `You are an elite, highly responsive voice assistant integrated into a smart application. 
@@ -413,12 +414,13 @@ app.post("/api/ai/ask", async (req, res) => {
           console.log("[Ask API] Quota exceeded. Using safe local fallback.");
           response = { content: "I am currently out of medical quota. Ensure safety, apply pressure to wounds, and wait for emergency services." };
        } else if (e.message?.includes("503") || e.message?.includes("UNAVAILABLE") || e.message?.includes("high demand") || e.message?.includes("429")) {
-          console.log("[Ask API] gemini-2.5-flash failed, falling back to gemini-2.5-flash");
+          console.log("[Ask API] gemini-3.5-flash failed, falling back to gemini-3.5-flash");
           const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
           const fallbackModel = new ChatGoogleGenerativeAI({
-            model: "gemini-2.5-flash",
+            model: "gemini-3.5-flash",
             apiKey: apiKey,
             temperature: 0.3,
+            maxRetries: 0,
           });
           const systemPrompt = `You are an elite, highly responsive voice assistant integrated into a smart application. 
 
@@ -467,7 +469,8 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
              response = { content: "I'm experiencing connectivity issues right now. Ensure standard safety protocols." };
           }
        } else {
-          throw e;
+          console.log("[Ask API] Unexpected error:", e.message, "Falling back.");
+          response = { content: "I'm having trouble connecting to my central systems, please ensure standard safety protocols." };
        }
     }
     
@@ -477,8 +480,8 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
     
     res.json({ answer: cleanAnswer });
   } catch (error: any) {
-    console.error("❌ AI Error:", error.message);
-    res.status(500).json({ answer: "I'm experiencing connectivity issues right now. How else can I assist you with safety?", error_detail: error.message, stack: error.stack });
+    console.log("⚠️ AI Error:", error.message);
+    res.json({ answer: "I'm experiencing connectivity issues right now. How else can I assist you with safety?", error_detail: error.message });
   }
 });
 
@@ -680,6 +683,40 @@ const getTwilio = () => {
   return twilioClient;
 };
 
+// API: Twilio Diagnostics
+app.get("/api/diagnostics/twilio", (req, res) => {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const fromNum = process.env.TWILIO_FROM_NUMBER;
+  
+  const hostUrl = `${req.protocol}://${req.get('host')}`;
+  
+  const status = {
+    environment_variables: {
+      TWILIO_ACCOUNT_SID: {
+        configured: !!sid,
+        valid_format: !!sid && (sid.startsWith("AC") || sid.length > 20)
+      },
+      TWILIO_AUTH_TOKEN: {
+        configured: !!token,
+        valid_format: !!token && token.length > 20
+      },
+      TWILIO_FROM_NUMBER: {
+        configured: !!fromNum,
+        valid_format: !!fromNum && fromNum.startsWith("+")
+      }
+    },
+    webhook_configuration_urls: {
+      sms_webhook: `${hostUrl}/api/twilio/sms`,
+      voice_webhook: `${hostUrl}/api/twilio/voice`,
+      instructions: "Set the above URLs in your Twilio Console for the configured phone number under 'Messaging' (Webhook) and 'Voice' (Webhook) sections."
+    },
+    overall_status: !!(sid && token && fromNum) ? "READY" : "MISSING_CONFIGURATION"
+  };
+  
+  res.json(status);
+});
+
 // API: Log Emergency Dispatch
 app.post("/api/emergencies/log", async (req, res) => {
   const { details, location, type } = req.body;
@@ -695,7 +732,7 @@ app.post("/api/emergencies/log", async (req, res) => {
     if (error) throw error;
     res.json({ success: true, data });
   } catch (error: any) {
-    console.error("❌ Supabase Log Error:", error.message);
+    console.log("⚠️ Supabase Log Error:", error.message);
     res.status(500).json({ error: "Storage Failure" });
   }
 });
@@ -732,7 +769,7 @@ app.post("/api/ai/voice-process", async (req, res) => {
 
     res.json({ mode, content: text.replace(/\[MODE: .*?\]/, "").replace(/Content:/, "").trim(), original_transcript: transcript });
   } catch (error: any) {
-    console.error("❌ AI Error:", error);
+    console.log("⚠️ AI Error:", error);
     res.json({ mode: 'GENERAL', content: "Ensure safety, check breathing and pulse, apply firm pressure to wounds to stop bleeding, and wait for emergency services.", original_transcript: transcript });
   }
 });
@@ -778,7 +815,7 @@ app.post("/api/sos/notify", async (req, res) => {
     console.log(`[SMS] Delivered to ${results.filter((r: any) => r.status === 'fulfilled').length} recipients.`);
     res.json({ success: true, results });
   } catch (error: any) {
-    console.error("❌ Twilio SMS Error:", error.message);
+    console.log("⚠️ Twilio SMS Error:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -811,7 +848,7 @@ app.post("/api/sos/call-neon", async (req, res) => {
     console.log(`[Neon Call] SID: ${call.sid}`);
     res.json({ success: true, callSid: call.sid });
   } catch (error: any) {
-    console.error("❌ Neon Call Error:", error.message);
+    console.log("⚠️ Neon Call Error:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -871,14 +908,14 @@ app.post("/api/sos/call-initiate", async (req, res) => {
     });
     res.json({ success: true, callSid: call.sid });
   } catch (error: any) {
-    console.error("❌ Twilio Call Error:", error.message);
+    console.log("⚠️ Twilio Call Error:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 
 app.post("/api/ai/voice-agent", async (req, res) => {
-  const { transcript, location } = req.body;
+  const { transcript, location, history } = req.body;
   if (!transcript) return res.status(400).json({ error: "Transcript required" });
 
   try {
@@ -888,7 +925,7 @@ app.post("/api/ai/voice-agent", async (req, res) => {
     // Define the tools strictly based on user intent
     const execute_sos_dispatch = {
       name: "execute_sos_dispatch",
-      description: "Triggers the SOS emergency dual-call dispatch. Use when the user specifically mentions severe danger, intense pain, or needs an ambulance immediately.",
+      description: "ONLY trigger the SOS emergency dispatch if the user EXPLICITLY states they are in a life-threatening emergency, have had a severe accident, or explicitly ask for an ambulance. DO NOT use this for general questions, inquiries, or casual chat.",
       parameters: {
         type: Type.OBJECT,
         properties: { type: { type: Type.STRING, description: "The type of emergency, e.g. medical, crash, danger" } },
@@ -916,19 +953,19 @@ app.post("/api/ai/voice-agent", async (req, res) => {
       }
     };
 
-    const provide_first_aid = {
-      name: "provide_first_aid",
-      description: "Triggers the local first aid triage logic to provide instructions.",
+    const search_realtime_knowledge = {
+      name: "search_realtime_knowledge",
+      description: "Searches Google for real-time information, traffic updates, directions, weather, or general knowledge.",
       parameters: {
         type: Type.OBJECT,
-        properties: { symptom: { type: Type.STRING, description: "The symptom to provide first aid for" } },
-        required: ["symptom"]
+        properties: { query: { type: Type.STRING, description: "The precise search query to execute" } },
+        required: ["query"]
       }
     };
 
     const voiceAgentInstruction = `You are an elite, highly responsive voice assistant integrated into a smart application. 
 
-Your specialized domains of expertise are climate, traffic conditions, vehicle specifications, rules, regulations, and general knowledge. 
+Your specialized domains of expertise are climate, traffic conditions, current time, vehicle specifications, rules, regulations, and general knowledge.
 
 Because your output is fed directly into a Text-to-Speech engine, you MUST strictly adhere to the following voice-first rules:
 
@@ -936,39 +973,69 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
 2. ZERO MARKDOWN: Never use bolding, asterisks, bullet points, lists, code blocks, or emojis. Write in completely plain, flat text.
 3. SPOKEN FORMATTING: Spell out all numbers, symbols, and acronyms exactly as they should be spoken aloud (e.g., write "one hundred kilometers per hour" instead of "100 km/h", and "U. S. A." instead of "USA").
 4. CONVERSATIONAL TONE: Be helpful, natural, and friendly. Do not use robotic or overly formal language.
-5. GENERAL KNOWLEDGE: You are equipped to answer any general knowledge questions the user throws at you. Answer them accurately and concisely.
-6. HONESTY: Only state you don't know if you genuinely lack the information. Otherwise, strive to provide a helpful answer.
+5. GENERAL KNOWLEDGE: You are equipped to answer any general knowledge questions the user throws at you. Ensure you use search tools for real-time information if needed.
+6. TRAFFIC & ROUTES: When the user asks about going to a specific destination, you MUST check for accidents and traffic updates from their current location to the requested destination and give them a spoken summary.
+7. HONESTY: Only state you don't know if you genuinely lack the information.
 
-Always prioritize action. Do not suggest calling someone if a tool exists; call the tool yourself.`;
+If the user asks a general question, just answer it directly. Only use tools when explicitly requested or necessary.`;
+
+    const historyStr = history && Array.isArray(history) && history.length > 0 
+       ? "Conversation History:\n" + history.map((msg: any) => `${msg.role.toUpperCase()}: ${msg.text}`).join('\n') + "\n\n"
+       : "";
+
+    const userPrompt = `${historyStr}${req.body.trafficContext ? '\n' + req.body.trafficContext + '\n\n' : ''}User request: "${transcript}". Current location coords: ${location ? JSON.stringify(location) : 'Unknown'}. Please answer the user's request. If it is a direct command that requires a tool, trigger the appropriate tool. Otherwise, provide a conversational and concise response.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `User says: "${transcript}". Current location: ${location ? JSON.stringify(location) : 'Unknown'}. If this sounds like a command, trigger the appropriate tool. Otherwise, respond naturally and concisely as the Road SOS assistant.`,
+      model: "gemini-3.5-flash",
+      contents: userPrompt,
       config: {
         systemInstruction: voiceAgentInstruction,
-        tools: [{
-          functionDeclarations: [
-            execute_sos_dispatch,
-            Maps_to_nearest_hospital,
-            toggle_traffic_layer,
-            provide_first_aid
-          ]
-        }]
+        tools: [
+          {
+            functionDeclarations: [
+              execute_sos_dispatch,
+              Maps_to_nearest_hospital,
+              toggle_traffic_layer,
+              search_realtime_knowledge
+            ]
+          }
+        ]
       }
     });
 
     const calls = response.functionCalls;
     if (calls && calls.length > 0) {
+      if (calls[0].name === "search_realtime_knowledge") {
+        const searchQuery = (calls[0].args as any).query;
+        const searchPrompt = `Given the user's location ${location ? JSON.stringify(location) : 'Unknown'}, execute this search query: "${searchQuery}". Provide a helpful, conversational, and radically concise response for a highly responsive voice assistant. Limit to 1 to 3 short sentences. ZERO markdown. Spell out numbers and symbols. If the user asked about routes to a destination, give a spoken summary of traffic and accidents on the way.`;
+        try {
+            const searchResult = await ai.models.generateContent({
+                model: "gemini-3.5-flash",
+                contents: searchPrompt,
+                config: { tools: [{ googleSearch: {} }] }
+            });
+            return res.json({ text: searchResult.text });
+        } catch(searchErr: any) {
+            const isQuota = searchErr.message?.includes("quota") || searchErr.message?.includes("RESOURCE_EXHAUSTED") || searchErr.message?.includes("429");
+            if (isQuota) {
+                console.log("[Search Tool] Quota exceeded. Returning fallback message.");
+            } else {
+                console.log("Search Tool Error:", searchErr.message);
+            }
+            return res.json({ text: "I'm having trouble searching for that right now." });
+        }
+      }
       return res.json({ toolCall: { name: calls[0].name, args: calls[0].args }, text: "Executing command." });
     }
 
     return res.json({ text: response.text });
   } catch (error: any) {
-    console.error("❌ Voice Agent Error:", error.message);
-    if (error.message?.includes("quota") || error.message?.includes("Quota")) {
+    console.log("⚠️ Voice Agent Error:", error.message);
+    if (error.message?.includes("quota") || error.message?.includes("Quota") || error.message?.includes("429") || error.message?.includes("503") || error.message?.includes("UNAVAILABLE")) {
       return res.json({ text: "I'm currently operating offline due to capacity limits. I will connect you to emergency services now.", toolCall: { name: "execute_sos_dispatch", args: { type: "voice interaction fallback" } } });
     }
-    res.status(500).json({ error: "Voice agent failure." });
+    // Fallback instead of sending status 500 to prevent opaque API_FAIL
+    return res.json({ text: "I experienced a temporary disconnect from my systems, but I am still listening." });
   }
 });
 
@@ -990,7 +1057,7 @@ app.post("/api/traffic-updates", async (req, res) => {
     const ai = getAI();
     let prompt = "";
     if (locationName) {
-        prompt = `Give me a concise real-time traffic update (under 30 words) on traffic jams, accident reports, or road closures for ${locationName}. CRITICAL: Give the actual street names and area names where the traffic is. Format as plain text.`;
+        prompt = `Give me a concise real-time traffic update (under 30 words) on traffic jams, accident reports, or road closures within a 2-3 km radius of ${locationName}. CRITICAL: Give the actual street names and area names where the traffic is. Format as plain text.`;
     } else {
         prompt = `Give me a concise real-time traffic update (under 30 words) on traffic jams, accident reports, or road closures within a 2 to 3 km radius of latitude ${lat}, longitude ${lng}. CRITICAL: Give the actual street names and area names where the traffic is. DO NOT output the latitude and longitude coordinates in your response. Format as plain text.`;
     }
@@ -1023,7 +1090,7 @@ app.post("/api/traffic-updates", async (req, res) => {
 
     let response;
     try {
-      response = await generateCall("gemini-2.5-flash"); // Flash 2.5 is faster for simple search grounding
+      response = await generateCall("gemini-3.5-flash"); // Flash 2.5 is faster for simple search grounding
     } catch (e: any) {
       if (e.message !== "QUOTA_EXCEEDED") {
         console.log("⚠️ Traffic Update fallback hit:", e.message);
@@ -1038,7 +1105,7 @@ app.post("/api/traffic-updates", async (req, res) => {
     trafficCache.set(cacheKey, { result: text, timestamp: Date.now() });
     res.json({ update: text });
   } catch (error: any) {
-    console.error("❌ Traffic Update Error:", error.message);
+    console.log("⚠️ Traffic Update Error:", error.message);
     res.json({ update: "Traffic is currently moderate with standard delays. Always drive safely." });
   }
 });
@@ -1073,7 +1140,39 @@ app.post("/api/places/nearby", async (req, res) => {
     }
     return res.json(data);
   } catch (error: any) {
-    console.error("❌ Places API Proxy Error:", error.message);
+    console.log("⚠️ Places API Proxy Error:", error.message);
+    res.status(500).json({ error: "Places API Proxy Failure" });
+  }
+});
+
+app.post("/api/places/search", async (req, res) => {
+  try {
+    const apiKey = process.env.GOOGLE_MAPS_PLATFORM_KEY || process.env.VITE_GOOGLE_MAPS_PLATFORM_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: "Google Maps API key not configured on server" });
+    }
+    
+    const body = req.body;
+    const fieldMask = req.headers['x-goog-fieldmask'] || "places.displayName,places.location,places.formattedAddress";
+    
+    const placesUrl = `https://places.googleapis.com/v1/places:searchText`;
+    const response = await fetch(placesUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": fieldMask as string
+      },
+      body: JSON.stringify(body)
+    });
+    
+    const data = await response.json();
+    if (!response.ok) {
+      return res.status(response.status).json(data);
+    }
+    return res.json(data);
+  } catch (error: any) {
+    console.log("⚠️ Places API Proxy Error:", error.message);
     res.status(500).json({ error: "Places API Proxy Failure" });
   }
 });

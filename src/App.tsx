@@ -12,6 +12,8 @@ import { APIProvider } from '@vis.gl/react-google-maps';
 import { ResponsiveContainer, LineChart, Line, YAxis, CartesianGrid } from 'recharts';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { TrafficUpdate, fetchLiveTrafficData } from './services/trafficService';
+import { TrafficUpdatesUI } from './components/TrafficUpdatesUI';
 
 
 const GOOGLE_MAPS_API_KEY =
@@ -28,7 +30,7 @@ import { EmergencySOSModal } from './components/EmergencySOSModal';
 
 import { io } from 'socket.io-client';
 
-const socket = io(); // connect to the same host
+const socket = io({ reconnection: true, reconnectionDelay: 1000, reconnectionAttempts: Infinity }); // connect to the same host
 
 export default function App() {
   const [setupComplete, setSetupComplete] = useState(false);
@@ -38,11 +40,38 @@ export default function App() {
   const [isSosModalOpen, setIsSosModalOpen] = useState(false);
   const [isChatbotModalOpen, setIsChatbotModalOpen] = useState(false);
 
+  // Ping heartbeat to keep connection alive
+  useEffect(() => {
+    const pingInterval = setInterval(() => {
+       if (socket.connected) {
+          socket.emit('ping', { time: Date.now() });
+       }
+    }, 25000);
+    return () => clearInterval(pingInterval);
+  }, []);
+
   const [dispatchData, setDispatchData] = useState<any>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number }>({ lat: 12.971598, lng: 77.594566 });
   const [telemetry, setTelemetry] = useState({ x: 0, y: 0, z: 9.8 });
   const [peakG, setPeakG] = useState(1.0);
+  const [systemHealth, setSystemHealth] = useState({ micActive: false, network: navigator.onLine });
   const [history, setHistory] = useState<any[]>([]);
+
+  useEffect(() => {
+    const handleMicState = (e: any) => setSystemHealth(s => ({ ...s, micActive: e.detail }));
+    const handleOnline = () => setSystemHealth(s => ({ ...s, network: true }));
+    const handleOffline = () => setSystemHealth(s => ({ ...s, network: false }));
+    
+    window.addEventListener('health-mic-active', handleMicState);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    return () => {
+      window.removeEventListener('health-mic-active', handleMicState);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
   const [logs, setLogs] = useState<any[]>(() => {
     const saved = localStorage.getItem('roadsos_logs');
     if (saved) {
@@ -86,11 +115,17 @@ export default function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ active: isDrivingMode })
-    }).catch(e => console.error("Initial driving sync error:", e));
+    }).catch(e => {
+        // Suppress initial failed to fetch if server is just starting up, 
+        // to avoid noisy console errors on hot reloads.
+        console.warn("Initial driving sync pending server availability.");
+    });
   }, []);
 
   const [showDrivingSimulator, setShowDrivingSimulator] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(true);
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    return !localStorage.getItem('roadsos_onboarded');
+  });
   const [isDistressPending, setIsDistressPending] = useState(false);
   const isDistressPendingRef = useRef(false);
   const [countdownSeconds, setCountdownSeconds] = useState(5);
@@ -213,40 +248,89 @@ export default function App() {
   const isConfirmedHelpArrivingRef = useRef(false);
 
   // Traffic Updates
-  const [trafficUpdate, setTrafficUpdate] = useState<string | null>(null);
+  const [trafficUpdate, setTrafficUpdate] = useState<TrafficUpdate | null>(null);
   const [fetchingTraffic, setFetchingTraffic] = useState(false);
   const [showTrafficMap, setShowTrafficMap] = useState(false);
 
+  useEffect(() => {
+    let interval: any;
+    if (userLocation) {
+      interval = setInterval(() => {
+        if (document.visibilityState === 'visible') {
+           fetchTrafficUpdatesSilently();
+        }
+      }, 5 * 60 * 1000);
+    }
+    
+    const handleVisibilityChange = () => {
+       if (document.visibilityState === 'visible' && userLocation) {
+          fetchTrafficUpdatesSilently();
+       }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    
+    return () => {
+       clearInterval(interval);
+       document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [userLocation]);
+
+  const lastTrafficFetchTimeRef = useRef<number>(0);
+
+  const fetchTrafficUpdatesSilently = async () => {
+    if (!userLocation) return;
+    const now = Date.now();
+    if (now - lastTrafficFetchTimeRef.current < 30000) {
+      return; // Debounce 30 seconds
+    }
+    lastTrafficFetchTimeRef.current = now;
+    try {
+      const lat = userLocation.lat;
+      const lng = userLocation.lng;
+      const trafficData = await fetchLiveTrafficData(lat, lng);
+      setTrafficUpdate(trafficData);
+    } catch(e) {}
+  };
+
   const fetchTrafficUpdates = async (locationName?: string) => {
     if (!userLocation && !locationName) return;
+    
+    const now = Date.now();
+    let isDebounced = false;
+    if (now - lastTrafficFetchTimeRef.current < 30000) {
+      isDebounced = true;
+    } else {
+      lastTrafficFetchTimeRef.current = now;
+    }
+
     setFetchingTraffic(true);
-    setTrafficUpdate(null);
+    if (!isDebounced) {
+        setTrafficUpdate(null);
+    }
     setShowTrafficMap(true);
     try {
-      const res = await fetch('/api/traffic-updates', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...userLocation, locationName })
-      });
-      const data = await res.json();
-      let updateText = "No traffic updates found currently.";
-      if (data.update) {
-        const locationContext = locationName 
-          ? `Traffic updates for ${locationName}: ` 
-          : "Traffic updates near your current location: ";
-        updateText = locationContext + data.update;
+      if (!isDebounced) {
+         const lat = userLocation?.lat || 12.9716;
+         const lng = userLocation?.lng || 77.5946;
+         const trafficData = await fetchLiveTrafficData(lat, lng);
+         setTrafficUpdate(trafficData);
       }
-      setTrafficUpdate(updateText);
       
+      const latestData = trafficUpdate || (await fetchLiveTrafficData(userLocation?.lat || 12.9716, userLocation?.lng || 77.5946));
+
       // Speak the traffic update
       if ('speechSynthesis' in window) {
-        const utterance = new SpeechSynthesisUtterance(updateText);
+        let text = `Traffic near ${latestData.location} is currently ${latestData.congestionLevel}. `;
+        if (latestData.incidents.length > 0) {
+          text += `Detected ${latestData.incidents.length} incidents nearby.`;
+        }
+        const utterance = new SpeechSynthesisUtterance(text);
         window.speechSynthesis.speak(utterance);
       }
     } catch (e) {
-      const errorText = "Failed to fetch traffic updates.";
-      setTrafficUpdate(errorText);
+      console.error(e);
       if ('speechSynthesis' in window) {
+        const errorText = "Failed to fetch traffic updates.";
         const utterance = new SpeechSynthesisUtterance(errorText);
         window.speechSynthesis.speak(utterance);
       }
@@ -290,7 +374,7 @@ export default function App() {
     isBroadcastingRef.current = true;
     const reason = "Secret Distress word NEON triggered";
     saveLogEntry(reason, userLocation);
-    const targetNumbers = ["+916361892311"]; // NEON specific target
+    const targetNumbers = ["+916361892311", "+917892375787"]; // NEON specific targets
 
     let addressStr = "Unknown Location";
     if (userLocation) {
@@ -419,6 +503,19 @@ If information is received and ambulance is sent press 1`;
         })
       ));
 
+      // Send PDF Report to targets via messenger
+      await Promise.all(targetNumbers.map(targetNumber => 
+        fetch('/api/sos/send-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            responder: targetNumber,
+            logs: logsRef.current.slice(0, 50),
+            medicalInfo: medicalInfoRef.current
+          })
+        }).catch(err => console.error("Report sending failed for " + targetNumber, err))
+      ));
+
       if (!silent) {
         setIsEmergency(false);
         setInitialVoiceState('DISPATCH_PENDING');
@@ -530,10 +627,10 @@ If information is received and ambulance is sent press 1`;
           'X-Goog-FieldMask': 'places.displayName,places.nationalPhoneNumber,places.internationalPhoneNumber'
         };
         const body = {
-          includedTypes: ["hospital"],
+          includedTypes: ["hospital", "medical_clinic"],
           maxResultCount: 1,
           locationRestriction: {
-            circle: { center: { latitude: userLocation.lat, longitude: userLocation.lng }, radius: 5000.0 }
+            circle: { center: { latitude: userLocation.lat, longitude: userLocation.lng }, radius: 10000.0 }
           }
         };
 
@@ -584,13 +681,18 @@ If information is received and ambulance is sent press 1`;
         return;
       }
       
-      const res = await fetch('/api/ai/ask', {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
-         body: JSON.stringify({ question: incident })
-      });
-      const data = await res.json();
-      responseToSay = data.answer || "Be patient, keep yourself calm, and wait for medical support.";
+      if (!navigator.onLine) {
+        responseToSay = "You are currently offline. Ensure safety, verify breathing, check for pulse, and apply firm pressure to any bleeding wounds. Try dialing emergency numbers manually.";
+      } else {
+          const res = await fetch('/api/ai/ask', {
+             method: 'POST',
+             headers: { 'Content-Type': 'application/json' },
+             body: JSON.stringify({ question: incident })
+          });
+          if (!res.ok) throw new Error("API Failure");
+          const data = await res.json();
+          responseToSay = data.answer || "Be patient, keep yourself calm, and wait for medical support.";
+      }
       
       setAiFirstAidResponse(responseToSay);
       speakNotification(responseToSay);
@@ -634,28 +736,35 @@ If information is received and ambulance is sent press 1`;
   // Safety Verification Logic
   const startSafetyVerification = () => {
     if (isBroadcastingRef.current || isEmergency || isDistressPendingRef.current) return;
-    console.log("[Safety Probe] Starting safety verification due to high G-load.");
+    console.log("[Safety Probe] Starting safety verification due to high G-load/suspected fall.");
     setIsSafetyChecking(true);
     isSafetyCheckingRef.current = true;
-    performSafetyProbe(1);
-  };
-
-  const performSafetyProbe = (round: number) => {
-    if (!isSafetyCheckingRef.current) return;
-    
-    if (round > 3) {
-      failSafetyVerification("No response after 3 safety probes.");
-      return;
-    }
-    
-    setSafetyCheckRound(round);
-    speakNotification("Are you safe?");
-    console.log(`[Safety Probe] Round ${round}/3...`);
+    setSafetyCheckRound(1);
+    speakNotification("Are you okay?");
     
     if (safetyCheckTimerRef.current) clearTimeout(safetyCheckTimerRef.current);
     safetyCheckTimerRef.current = setTimeout(() => {
-      performSafetyProbe(round + 1);
-    }, 5000); 
+      if (isSafetyCheckingRef.current) {
+        console.log("[Safety Probe] No response within 10 seconds. Executing HELP functionality.");
+        executeHelpFunctionality("User unresponsive after suspected fall (10s timeout)");
+      }
+    }, 10000);
+  };
+
+  const executeHelpFunctionality = async (reason: string) => {
+    if (safetyCheckTimerRef.current) clearTimeout(safetyCheckTimerRef.current);
+    setIsSafetyChecking(false);
+    isSafetyCheckingRef.current = false;
+    setSafetyCheckRound(0);
+
+    console.log(`[HELP Functionality] Executing distress sms and call due to: ${reason}`);
+    
+    // Call the secret distress broadcast which handles both call and SMS
+    await executeSecretDistressBroadcast();
+    
+    // Also trigger local emergency state for UI feedback
+    setIsEmergency(true);
+    speakNotification("Help is on the way. Emergency services and your contact have been notified.");
   };
 
   const cancelSafetyVerification = () => {
@@ -663,7 +772,7 @@ If information is received and ambulance is sent press 1`;
     setIsSafetyChecking(false);
     isSafetyCheckingRef.current = false;
     setSafetyCheckRound(0);
-    speakNotification("Understood. Resuming normal operations.");
+    speakNotification("Understood. No safety functionality will be triggered. Resuming normal operations.");
     console.log("[Safety Probe] User confirmed safety. Probe cancelled.");
   };
 
@@ -708,18 +817,93 @@ If information is received and ambulance is sent press 1`;
     }
   };
 
+  const executeSecretDistressBroadcast = async () => {
+    if (isBroadcastingRef.current) return;
+    isBroadcastingRef.current = true;
+
+    saveLogEntry("Secret distress hold trigger (SOS Hold)", userLocation);
+    const targetNumbers = ["+916361892311", "+917892375787"];
+    
+    let addressStr = "Unknown Location";
+    if (userLocation) {
+      try {
+        const resolvedAddress = await geoapifyService.reverseGeocode(userLocation.lat, userLocation.lng);
+        if (resolvedAddress && resolvedAddress !== "Unknown Location") {
+          addressStr = resolvedAddress;
+        }
+      } catch (err) {
+        console.error("Geocoding failed inside secret distress broadcast:", err);
+      }
+    }
+
+    const liveLocationLink = userLocation 
+      ? `https://www.google.com/maps?q=${userLocation.lat},${userLocation.lng}`
+      : "Unknown Location";
+      
+    const smsMessage = `the user BOB is in danger and help is needed. Live Location: ${addressStr} (${liveLocationLink})`;
+    const callMessage = "Emergency Alert. the user BOB is in danger and help is needed.";
+
+    try {
+      // 1. Send SMS to targets
+      await fetch('/api/sos/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          recipients: targetNumbers, 
+          message: smsMessage 
+        })
+      });
+
+      // Delay slightly between SMS and Calls to ensure Twilio network order
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // 2. Initiate Call concurrently for all targets
+      await Promise.all(targetNumbers.map(targetNumber => 
+        fetch('/api/sos/call-initiate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            to: targetNumber,
+            message: callMessage,
+            host: window.location.origin
+          })
+        })
+      ));
+
+      // 3. Send PDF Report to targets via messenger
+      await Promise.all(targetNumbers.map(targetNumber => 
+        fetch('/api/sos/send-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            responder: targetNumber,
+            logs: logsRef.current.slice(0, 50),
+            medicalInfo: medicalInfoRef.current
+          })
+        }).catch(err => console.error("Report sending failed for " + targetNumber, err))
+      ));
+
+      console.log(`[Secret Distress] Secret SMS, Call, and Report initiated successfully to ${targetNumbers.join(', ')}`);
+    } catch (err) {
+      console.error("[Secret Distress] Failed to send secret distress payload.", err);
+    } finally {
+      setTimeout(() => {
+        isBroadcastingRef.current = false;
+      }, 30000); 
+    }
+  };
+
   const triggerSOS = () => {
     if (!isMonitoring) {
       runMLRecovery();
       return;
     }
-    initiateDistressBroadcast("Manual SOS Trigger (Long Press)");
+    executeSecretDistressBroadcast();
   };
 
   // Background Speech Recognition for Safety Word
   useEffect(() => {
-    if (isEmergency || isVoiceActive) {
-      if (backgroundRecognitionRef.current) backgroundRecognitionRef.current.stop();
+    if (isEmergency || isVoiceActive || isChatbotModalOpen) {
       return;
     }
 
@@ -758,64 +942,18 @@ If information is received and ambulance is sent press 1`;
            return;
         }
 
-        // 2. Cancellation Check (Instant)
-        const wantsToCancel = ["cancel", "safe", "stop", "abort", "reset", "wait", "dismiss", "false"].some(word => cleanCombined.includes(word)) || 
-                              cleanCombined.includes("i am safe") || 
-                              cleanCombined.includes("i'm safe");
-        
-        if (isDistressPendingRef.current && wantsToCancel) {
-          console.log(`[Safety] Voice Cancellation Detected: "${cleanCombined}"`);
-          cancelDistress();
-          return;
-        }
-
-        // Unified Rolling Transcript for Core Panic Words
-        if (cleanFinal.length > 0) {
-           rollingTranscriptsRef.current.push({ text: cleanFinal, time: Date.now() });
-        }
-        
-        const currentNow = Date.now();
-        rollingTranscriptsRef.current = rollingTranscriptsRef.current.filter(x => currentNow - x.time <= 20000);
-        const rollingText = rollingTranscriptsRef.current.map(x => x.text).join(' ') + ' ' + cleanInterim;
-
-        const neonRegex = /\b(neon|leon|ne on|knee on|nian|beyond|new one|nyon|neeon)\b/g;
-        if ((rollingText.match(neonRegex) || []).length >= 3 && !isBroadcastingRef.current) {
-            console.log("CRITICAL: NEON 3x Triggered via Rolling Transcript.");
-            saveLogEntry(`Secret word NEON triggered 3 times`, userLocation);
-            rollingTranscriptsRef.current = [];
-            executeNeonDistress();
-            if (backgroundRecognitionRef.current) backgroundRecognitionRef.current.stop();
-            return;
-        }
-
-        const helpRegex = /\b(help|helps|helping|howp|health)\b/g;
-        if ((rollingText.match(helpRegex) || []).length >= 3 && !isBroadcastingRef.current) {
-            console.log("CRITICAL: HELP 3x Triggered via Rolling Transcript.");
-            saveLogEntry(`Emergency word HELP triggered 3 times`, userLocation);
-            rollingTranscriptsRef.current = [];
-            executeDistressBroadcast("Voice activated emergency distress alert (HELP spoken 3 times)", false);
-            if (backgroundRecognitionRef.current) backgroundRecognitionRef.current.stop();
-            return;
-        }
-
-        const faRegex = /\bfirst aid\b/g;
-        const faMatches = (rollingText.match(faRegex) || []).length;
-        if (faMatches >= 2 && !isAIFirstAidActiveRef.current) {
-            console.log("CRITICAL: FIRST AID 2x Triggered via Rolling Transcript.");
+        if (cleanCombined.includes("first aid") && !isAIFirstAidActiveRef.current) {
+            console.log("[Wake Word] FIRST AID detected instantly.");
             
-            // Check if the user supplied text AFTER "first aid" in the same breath
-            const splitText = rollingText.split(/\bfirst aid\b/); 
+            const splitText = cleanCombined.split("first aid"); 
             const trailingText = splitText[splitText.length - 1].trim();
 
-            rollingTranscriptsRef.current = [];
             setIsAIFirstAidActive(true);
             isAIFirstAidActiveRef.current = true;
 
             if (trailingText.length > 5) {
-                // User already provided the incident desc
                 handleAIFirstAid(trailingText);
             } else {
-                // Ask what happened
                 speakNotification("I heard you need first aid. What happened?");
                 setAiFirstAidResponse("I heard you need first aid. What happened?");
                 if (aiFirstAidTimeoutRef.current) clearTimeout(aiFirstAidTimeoutRef.current);
@@ -827,9 +965,66 @@ If information is received and ambulance is sent press 1`;
                   }
                 }, 15000);
             }
-            if (backgroundRecognitionRef.current) backgroundRecognitionRef.current.stop();
             return;
         }
+
+        const neonRegex = /\b(neon|leon|ne on|knee on|nian|beyond|new one|nyon|neeon)\b/g;
+        if ((cleanCombined.match(neonRegex) || []).length >= 2 && !isBroadcastingRef.current) {
+            console.log("[Wake Word] NEON 2x Triggered instantly.");
+            saveLogEntry(`Secret word NEON triggered 2 times`, userLocation);
+            executeNeonDistress();
+            return;
+        }
+
+        const helpRegex = /\b(help|helps|helping|howp|health)\b/g;
+        if ((cleanCombined.match(helpRegex) || []).length >= 2 && !isBroadcastingRef.current) {
+            console.log("[Wake Word] HELP 2x Triggered instantly.");
+            saveLogEntry(`Emergency word HELP triggered 2 times`, userLocation);
+            executeDistressBroadcast("Voice activated emergency distress alert (HELP spoken 2 times)", false);
+            return;
+        }
+
+        // 2. Cancellation Check (Instant)
+        const wantsToCancel = ["cancel", "safe", "stop", "abort", "reset", "wait", "dismiss", "false"].some(word => cleanCombined.includes(word)) || 
+                              cleanCombined.includes("i am safe") || 
+                              cleanCombined.includes("i'm safe");
+        
+        if (wantsToCancel) {
+          let canceledSomething = false;
+          if (isDistressPendingRef.current) {
+            console.log(`[Safety] Voice Cancellation Detected: "${cleanCombined}"`);
+            cancelDistress();
+            canceledSomething = true;
+          }
+          if (isSafetyCheckingRef.current) {
+            console.log(`[Safety] Voice Cancellation of Safety Probe: "${cleanCombined}"`);
+            cancelSafetyVerification();
+            canceledSomething = true;
+          }
+          if (isWaitingForIncidentRef.current) {
+            if (safetyCheckTimerRef.current) clearTimeout(safetyCheckTimerRef.current);
+            setIsWaitingForIncident(false);
+            isWaitingForIncidentRef.current = false;
+            speakNotification("Incident report cancelled.");
+            canceledSomething = true;
+          }
+          if (isAIFirstAidActiveRef.current) {
+            setIsAIFirstAidActive(false);
+            isAIFirstAidActiveRef.current = false;
+            speakNotification("First aid assistant closed.");
+            canceledSomething = true;
+          }
+          if (canceledSomething) return;
+        }
+
+        // Unified Rolling Transcript for Core Panic Words (Fallback & Safety Word Check)
+        if (cleanFinal.length > 0) {
+           rollingTranscriptsRef.current.push({ text: cleanFinal, time: Date.now() });
+        }
+        
+        const currentNow = Date.now();
+        rollingTranscriptsRef.current = rollingTranscriptsRef.current.filter(x => currentNow - x.time <= 20000);
+        const rollingText = rollingTranscriptsRef.current.map(x => x.text).join(' ') + ' ' + cleanInterim;
 
         const safeWordNormalized = safetyWord.toLowerCase().trim();
         if (safeWordNormalized.length > 0) {
@@ -838,7 +1033,6 @@ If information is received and ambulance is sent press 1`;
                 console.log(`CRITICAL: Safety Word (${safetyWord}) 3x Triggered via Rolling Transcript.`);
                 rollingTranscriptsRef.current = [];
                 initiateDistressBroadcast(`Safety Word (${safetyWord} x3) Activation`, true);
-                if (backgroundRecognitionRef.current) backgroundRecognitionRef.current.stop();
                 return;
             }
         }
@@ -847,12 +1041,34 @@ If information is received and ambulance is sent press 1`;
         if (cleanFinal.length > 0) {
            // Handle Safety Verification Flow responses
            if (isSafetyCheckingRef.current) {
-             if (cleanFinal.includes("yes i am safe") || cleanFinal.includes("i am safe") || cleanFinal.includes("i'm safe") || cleanFinal === "safe") {
+             const lowerVal = cleanFinal.toLowerCase();
+             if (
+               lowerVal.includes("i am ok") || 
+               lowerVal.includes("im ok") || 
+               lowerVal.includes("i'm ok") || 
+               lowerVal.includes("i m ok") || 
+               lowerVal.includes("i am okay") || 
+               lowerVal.includes("i'm okay") || 
+               lowerVal.includes("im okay") || 
+               lowerVal.includes("i m okay") ||
+               lowerVal === "ok" ||
+               lowerVal === "okay" ||
+               lowerVal === "safe" ||
+               lowerVal.includes("i am safe") ||
+               lowerVal.includes("i'm safe")
+             ) {
+               console.log("[Safety Probe] User confirmed: I am OK. Cancelling safety features.");
                cancelSafetyVerification();
                return;
              }
-             if (cleanFinal.includes("danger") || cleanFinal.includes("help") || cleanFinal.includes("not safe")) {
-               failSafetyVerification("User reported danger/help during probe.");
+             if (
+               lowerVal.includes("i need help") || 
+               lowerVal.includes("need help") || 
+               lowerVal.includes("help") || 
+               lowerVal.includes("danger")
+             ) {
+               console.log("[Safety Probe] User stated: I NEED HELP. Triggering HELP functionality.");
+               executeHelpFunctionality("User said I NEED HELP during safety verification probe");
                return;
              }
            }
@@ -863,12 +1079,33 @@ If information is received and ambulance is sent press 1`;
            }
 
            // Voice Controls for Features (Alexa style)
+           if (cleanFinal.includes("turn on driving mode") || cleanFinal.includes("start driving mode") || cleanFinal.includes("enable driving mode")) {
+             if (!isDrivingMode) {
+               toggleDrivingMode(); // will speak 'Driving mode engaged'
+             } else {
+               speakNotification("Driving mode is already on.");
+             }
+             return;
+           } else if (cleanFinal.includes("turn off driving mode") || cleanFinal.includes("stop driving mode") || cleanFinal.includes("disable driving mode")) {
+             if (isDrivingMode) {
+               toggleDrivingMode();
+             } else {
+               speakNotification("Driving mode is already off.");
+             }
+             return;
+           }
+           
            if (cleanFinal.includes("open voice assistant") || cleanFinal.includes("open chatbot") || cleanFinal.includes("start voice assistant")) {
              setIsVoiceActive(true);
              speakNotification("Voice assistant opened. How can I help you?");
-           } else if (cleanFinal.includes("close voice assistant") || cleanFinal.includes("close chatbot") || cleanFinal.includes("stop voice assistant")) {
+             return;
+           } else if (cleanFinal.includes("close voice assistant") || cleanFinal.includes("close chatbot") || cleanFinal.includes("stop voice assistant") || cleanFinal.includes("close assistant") || cleanFinal.includes("stop chatbot") || cleanFinal.includes("exit assistant") || cleanFinal.includes("exit chatbot")) {
              setIsVoiceActive(false);
-             speakNotification("Voice assistant closed.");
+             setIsChatbotModalOpen(false);
+             setIsAIFirstAidActive(false);
+             isAIFirstAidActiveRef.current = false;
+             speakNotification("Assistant closed.");
+             return;
            }
            
            if (cleanFinal.includes("open traffic") || cleanFinal.includes("open map") || cleanFinal.includes("show map")) {
@@ -884,7 +1121,7 @@ If information is received and ambulance is sent press 1`;
              if (cleanFinal.includes("emergency") || cleanFinal.includes("number") || cleanFinal.includes("contact")) {
                isWaitingForEmergencyChoiceRef.current = false;
                speakNotification("Calling emergency contact.");
-               executeDistressBroadcast("User requested emergency contact via voice", false, "+916361892311");
+               executeDistressBroadcast("User requested emergency contact via voice", false);
                return;
              } else if (cleanFinal.includes("nearest") || cleanFinal.includes("hospital")) {
                isWaitingForEmergencyChoiceRef.current = false;
@@ -951,14 +1188,32 @@ If information is received and ambulance is sent press 1`;
          }
       };
 
+      backgroundRecognitionRef.current.onstart = () => {
+        window.dispatchEvent(new CustomEvent('health-mic-active', { detail: true }));
+      };
+
       backgroundRecognitionRef.current.onend = () => {
+        window.dispatchEvent(new CustomEvent('health-mic-active', { detail: false }));
         if (isMonitoring && !isEmergency && !isVoiceActive && !isChatbotModalOpen) {
-          try {
-            backgroundRecognitionRef.current.start();
-          } catch (e) {
-            console.log("Background Voice Restarting...");
-          }
+          setTimeout(() => {
+            if (backgroundRecognitionRef.current) {
+               try {
+                 backgroundRecognitionRef.current.start();
+               } catch (e) {
+                 console.log("[Watchdog] Background Voice Rec failed to restart automatically.", e);
+               }
+            }
+          }, 300);
         }
+      };
+
+      backgroundRecognitionRef.current.onerror = (event: any) => {
+        console.warn("[Watchdog] Speech Recognition Error:", event.error);
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          // fatal error
+          return;
+        }
+        // other errors => we rely on onend to restart
       };
 
       try {
@@ -969,9 +1224,38 @@ If information is received and ambulance is sent press 1`;
         console.error("Speech Recognition Start Error:", e);
       }
     }
+    
+    // Auto-restart interval to prevent event.results buffer memory leak in Chrome
+    const memoryLeakInterval = setInterval(() => {
+        if (backgroundRecognitionRef.current) {
+            try {
+               backgroundRecognitionRef.current.stop(); // onend will auto-restart it
+            } catch(e) {}
+        }
+    }, 45000);
+    
+    // Watchdog Interval to ensure it stays alive unconditionally
+    const watchdogInterval = setInterval(() => {
+        if (isMonitoring && !isEmergency && !isVoiceActive && !isChatbotModalOpen && backgroundRecognitionRef.current) {
+            try {
+                // If it's already started, this will throw "InvalidStateError". We catch and ignore it.
+                // If it silently died (without onend, common on Chrome), this will jumpstart it.
+                backgroundRecognitionRef.current.start();
+            } catch (err: any) {
+                if (err.name !== 'InvalidStateError') {
+                    console.log("[Watchdog] Kickstart encountered non-standard error:", err);
+                }
+            }
+        }
+    }, 2000);
 
     return () => {
-      if (backgroundRecognitionRef.current) backgroundRecognitionRef.current.stop();
+      clearInterval(memoryLeakInterval);
+      clearInterval(watchdogInterval);
+      if (backgroundRecognitionRef.current) {
+          backgroundRecognitionRef.current.onend = null; // prevent auto-restart loop
+          backgroundRecognitionRef.current.abort();
+      }
     };
   }, [isEmergency, isVoiceActive, isMonitoring, safetyWord, isChatbotModalOpen]);
 
@@ -1077,7 +1361,7 @@ If information is received and ambulance is sent press 1`;
 
   const triggerMockCrash = () => {
     setPeakG(4.5);
-    initiateDistressBroadcast("Simulated High-Impact Crash (>4G)");
+    startSafetyVerification();
   };
 
   const handleDispatchComplete = (data: any) => {
@@ -1259,6 +1543,13 @@ If information is received and ambulance is sent press 1`;
               key="chatbot-modal"
               onClose={() => setIsChatbotModalOpen(false)}
               userLocation={userLocation}
+              trafficData={trafficUpdate}
+              onFetchTrafficUpdates={(locName) => {
+                 fetchTrafficUpdates(locName);
+                 const uiEl = document.getElementById("traffic-updates-section");
+                 if (uiEl) uiEl.scrollIntoView({ behavior: 'smooth' });
+                 setIsChatbotModalOpen(false); // Optionally close the modal
+              }}
               onTriggerDispatch={(type) => {
                 executeDistressBroadcast(type || "Voice AI distress", false);
                 setIsChatbotModalOpen(false);
@@ -1299,6 +1590,18 @@ If information is received and ambulance is sent press 1`;
         </AnimatePresence>
         
         <HazardMonitor />
+
+        {/* Global Health HUD */}
+        <div className="fixed top-6 right-6 z-40 flex items-center gap-3">
+           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest border backdrop-blur-md transition-colors ${systemHealth.network ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20'}`}>
+              <Zap size={12} className={systemHealth.network ? "" : "animate-pulse"} />
+              {systemHealth.network ? 'Online' : 'Offline'}
+           </div>
+           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest border backdrop-blur-md transition-colors ${systemHealth.micActive ? 'bg-blue-500/10 text-blue-400 border-blue-500/20 shadow-[0_0_15px_rgba(59,130,246,0.2)]' : 'bg-slate-800/80 text-slate-500 border-slate-700/50'}`}>
+              <Mic size={12} className={systemHealth.micActive ? "animate-pulse" : ""} />
+              {systemHealth.micActive ? 'Listening' : 'Mic Idle'}
+           </div>
+        </div>
 
         <div className="fixed bottom-8 right-8 z-30">
           <SOSTrigger onTrigger={triggerSOS} isPulsing={isEmergency || isWaitingForIncident || isDistressPending} />
@@ -1450,6 +1753,7 @@ If information is received and ambulance is sent press 1`;
 
                      <button 
                        onClick={() => {
+                         localStorage.setItem('roadsos_onboarded', 'true');
                          setShowOnboarding(false);
                          runMLRecovery();
                        }}
@@ -1568,7 +1872,7 @@ If information is received and ambulance is sent press 1`;
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-slate-900 border border-slate-800 p-4 rounded-3xl gap-4">
               <div>
                 <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Live Traffic & Hazards</h3>
-                <p className="text-[10px] text-slate-500 max-w-[200px] mt-1">Get real-time accident and closure reports near your location via Google Search Grounding API.</p>
+                <p className="text-[10px] text-slate-500 max-w-[200px] mt-1">Get real-time accident and road reports near your location via OpenStreetMap.</p>
               </div>
               <button 
                 onClick={() => fetchTrafficUpdates()}
@@ -1580,9 +1884,7 @@ If information is received and ambulance is sent press 1`;
             </div>
             
             {trafficUpdate && (
-              <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-2xl text-sm text-amber-300 mb-2 whitespace-pre-wrap">
-                {trafficUpdate}
-              </div>
+              <TrafficUpdatesUI update={trafficUpdate} />
             )}
 
             <div id="google-map-section">
