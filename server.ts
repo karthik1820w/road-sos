@@ -172,7 +172,7 @@ const generateAIResponse = async (prompt: string, isHighPriority: boolean = fals
     try {
       const ai = getAI();
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash", // Using stable latest flash for reliability
+        model: "gemini-2.5-flash-lite", // Using stable latest flash lite for reliability and low latency
         contents: prompt,
         config: {
           maxOutputTokens: isHighPriority ? 120 : 300,
@@ -250,12 +250,12 @@ const getLangchainConversation = () => {
     const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY is not configured.");
     
-    // We use gemini-3.5-flash for speed and conversational capabilities
+    // We use gemini-2.5-flash-lite for speed and conversational capabilities
     const model = new ChatGoogleGenerativeAI({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash-lite",
       apiKey: apiKey,
       temperature: 0.3,
-      maxRetries: 0,
+      maxRetries: 3,
     });
     
     const systemPrompt = `You are an elite, highly responsive voice assistant integrated into a smart application. 
@@ -412,12 +412,12 @@ app.post("/api/ai/ask", async (req, res) => {
        
        if (isQuota) {
           console.log("[Ask API] Quota exceeded. Using safe local fallback.");
-          response = { content: "I am currently out of medical quota. Ensure safety, apply pressure to wounds, and wait for emergency services." };
+          response = { content: "I'm experiencing connectivity issues right now. Ensure standard safety protocols, apply firm pressure to any bleeding wounds, and wait for emergency services." };
        } else if (e.message?.includes("503") || e.message?.includes("UNAVAILABLE") || e.message?.includes("high demand") || e.message?.includes("429")) {
-          console.log("[Ask API] gemini-3.5-flash failed, falling back to gemini-3.5-flash");
+          console.log("[Ask API] gemini-2.5-flash-lite failed, falling back.");
           const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
           const fallbackModel = new ChatGoogleGenerativeAI({
-            model: "gemini-3.5-flash",
+            model: "gemini-1.5-flash-8b",
             apiKey: apiKey,
             temperature: 0.3,
             maxRetries: 0,
@@ -480,8 +480,12 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
     
     res.json({ answer: cleanAnswer });
   } catch (error: any) {
-    console.log("⚠️ AI Error:", error.message);
-    res.json({ answer: "I'm experiencing connectivity issues right now. How else can I assist you with safety?", error_detail: error.message });
+    if (error.message?.includes("quota") || error.message?.includes("429")) {
+        console.log("⚠️ AI Error: Quota/Rate Limit Exceeded.");
+    } else {
+        console.log("⚠️ AI Error:", error.message);
+    }
+    res.json({ answer: "I'm experiencing connectivity issues right now. How else can I assist you with safety?", error_detail: "Connection Issue" });
   }
 });
 
@@ -648,7 +652,11 @@ app.post("/api/sos/send-report", async (req, res) => {
         });
         res.json({ success: true, reportId, reportUrl });
       } catch (err: any) {
-        console.error("Twilio report send error:", err);
+        if (err.message && err.message.includes("Authenticate")) {
+           console.error("Twilio report send error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
+        } else {
+           console.error("Twilio report send error:", err);
+        }
         res.status(500).json({ error: err.message });
       }
     });
@@ -769,7 +777,11 @@ app.post("/api/ai/voice-process", async (req, res) => {
 
     res.json({ mode, content: text.replace(/\[MODE: .*?\]/, "").replace(/Content:/, "").trim(), original_transcript: transcript });
   } catch (error: any) {
-    console.log("⚠️ AI Error:", error);
+    if (error?.message?.includes("quota") || error?.message?.includes("429")) {
+        console.log("⚠️ AI Error: Quota.");
+    } else {
+        console.log("⚠️ AI Error.");
+    }
     res.json({ mode: 'GENERAL', content: "Ensure safety, check breathing and pulse, apply firm pressure to wounds to stop bleeding, and wait for emergency services.", original_transcript: transcript });
   }
 });
@@ -806,8 +818,12 @@ app.post("/api/sos/notify", async (req, res) => {
         results.push({ status: "fulfilled", value: result });
         // Add a small delay between messages to ensure proper delivery order
         await new Promise(resolve => setTimeout(resolve, 500));
-      } catch (err) {
-        console.error(`[SMS] Failed to send to ${formattedTo}:`, err);
+      } catch (err: any) {
+        if (err.message && err.message.includes("Authenticate")) {
+           console.error(`[SMS] Failed to send to ${formattedTo}: Twilio Authentication Error. Please check your TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in the AI Studio Settings menu.`);
+        } else {
+           console.error(`[SMS] Failed to send to ${formattedTo}:`, err);
+        }
         results.push({ status: "rejected", reason: err });
       }
     }
@@ -835,7 +851,7 @@ app.post("/api/sos/call-neon", async (req, res) => {
     const hostUrl = `https://${req.get('host')}`;
     const twimlString = `<Response>
       <Gather numDigits="1" action="${hostUrl}/api/twilio/call-neon-gather?patient=${encodeURIComponent(patientName)}" timeout="15" method="POST">
-        <Say>Emergency distress alert. Press 1 to acknowledge.</Say>
+        <Say>${patientName} is in danger. ${patientName} is in danger. Press 1 to acknowledge.</Say>
       </Gather>
       <Say>No confirmation received.</Say>
     </Response>`;
@@ -848,7 +864,11 @@ app.post("/api/sos/call-neon", async (req, res) => {
     console.log(`[Neon Call] SID: ${call.sid}`);
     res.json({ success: true, callSid: call.sid });
   } catch (error: any) {
-    console.log("⚠️ Neon Call Error:", error.message);
+    if (error.message && error.message.includes("Authenticate")) {
+       console.log("⚠️ Neon Call Error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
+    } else {
+       console.log("⚠️ Neon Call Error:", error.message);
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -908,22 +928,33 @@ app.post("/api/sos/call-initiate", async (req, res) => {
     });
     res.json({ success: true, callSid: call.sid });
   } catch (error: any) {
-    console.log("⚠️ Twilio Call Error:", error.message);
+    if (error.message && error.message.includes("Authenticate")) {
+       console.log("⚠️ Twilio Call Error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
+    } else {
+       console.log("⚠️ Twilio Call Error:", error.message);
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 
+let voiceAgentMutex: Promise<any> = Promise.resolve();
+
 app.post("/api/ai/voice-agent", async (req, res) => {
   const { transcript, location, history } = req.body;
-  if (!transcript) return res.status(400).json({ error: "Transcript required" });
+  const cleanTranscript = (transcript || "").trim();
+  
+  if (!cleanTranscript || cleanTranscript.length === 0) {
+     return res.json({ text: "I'm listening." });
+  }
 
-  try {
-    // Setup Native Gemini Function Calling
-    const ai = getAI();
-    
-    // Define the tools strictly based on user intent
-    const execute_sos_dispatch = {
+  const executeVoiceAgent = async () => {
+    try {
+      // Setup Native Gemini Function Calling
+      const ai = getAI();
+      
+      // Define the tools strictly based on user intent
+      const execute_sos_dispatch = {
       name: "execute_sos_dispatch",
       description: "ONLY trigger the SOS emergency dispatch if the user EXPLICITLY states they are in a life-threatening emergency, have had a severe accident, or explicitly ask for an ambulance. DO NOT use this for general questions, inquiries, or casual chat.",
       parameters: {
@@ -953,16 +984,6 @@ app.post("/api/ai/voice-agent", async (req, res) => {
       }
     };
 
-    const search_realtime_knowledge = {
-      name: "search_realtime_knowledge",
-      description: "Searches Google for real-time information, traffic updates, directions, weather, or general knowledge.",
-      parameters: {
-        type: Type.OBJECT,
-        properties: { query: { type: Type.STRING, description: "The precise search query to execute" } },
-        required: ["query"]
-      }
-    };
-
     const voiceAgentInstruction = `You are an elite, highly responsive voice assistant integrated into a smart application. 
 
 Your specialized domains of expertise are climate, traffic conditions, current time, vehicle specifications, rules, regulations, and general knowledge.
@@ -983,60 +1004,78 @@ If the user asks a general question, just answer it directly. Only use tools whe
        ? "Conversation History:\n" + history.map((msg: any) => `${msg.role.toUpperCase()}: ${msg.text}`).join('\n') + "\n\n"
        : "";
 
-    const userPrompt = `${historyStr}${req.body.trafficContext ? '\n' + req.body.trafficContext + '\n\n' : ''}User request: "${transcript}". Current location coords: ${location ? JSON.stringify(location) : 'Unknown'}. Please answer the user's request. If it is a direct command that requires a tool, trigger the appropriate tool. Otherwise, provide a conversational and concise response.`;
+    const userPrompt = `${historyStr}${req.body.trafficContext ? '\n' + req.body.trafficContext + '\n\n' : ''}User request: "${cleanTranscript}". Current location coords: ${location ? JSON.stringify(location) : 'Unknown'}. Please answer the user's request. If it is a direct command that requires a tool, trigger the appropriate tool. Otherwise, provide a conversational and concise response.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: userPrompt,
-      config: {
-        systemInstruction: voiceAgentInstruction,
-        tools: [
-          {
-            functionDeclarations: [
-              execute_sos_dispatch,
-              Maps_to_nearest_hospital,
-              toggle_traffic_layer,
-              search_realtime_knowledge
-            ]
+    const generateVoiceResponse = async () => {
+      let lastError: any = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          return await ai.models.generateContent({
+            model: "gemini-2.5-flash-lite",
+            contents: userPrompt,
+            config: {
+              systemInstruction: voiceAgentInstruction,
+              tools: [
+                {
+                  functionDeclarations: [
+                    execute_sos_dispatch,
+                    Maps_to_nearest_hospital,
+                    toggle_traffic_layer
+                  ]
+                }
+              ]
+            }
+          });
+        } catch (e: any) {
+          lastError = e;
+          if (e.message?.includes("429") || e.message?.includes("503")) {
+            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+            continue;
           }
-        ]
+          throw e; // throw immediately on non-transient errors
+        }
       }
-    });
+      throw lastError; // throw after 3 retries
+    };
+
+    const response = await generateVoiceResponse();
 
     const calls = response.functionCalls;
     if (calls && calls.length > 0) {
-      if (calls[0].name === "search_realtime_knowledge") {
-        const searchQuery = (calls[0].args as any).query;
-        const searchPrompt = `Given the user's location ${location ? JSON.stringify(location) : 'Unknown'}, execute this search query: "${searchQuery}". Provide a helpful, conversational, and radically concise response for a highly responsive voice assistant. Limit to 1 to 3 short sentences. ZERO markdown. Spell out numbers and symbols. If the user asked about routes to a destination, give a spoken summary of traffic and accidents on the way.`;
-        try {
-            const searchResult = await ai.models.generateContent({
-                model: "gemini-3.5-flash",
-                contents: searchPrompt,
-                config: { tools: [{ googleSearch: {} }] }
-            });
-            return res.json({ text: searchResult.text });
-        } catch(searchErr: any) {
-            const isQuota = searchErr.message?.includes("quota") || searchErr.message?.includes("RESOURCE_EXHAUSTED") || searchErr.message?.includes("429");
-            if (isQuota) {
-                console.log("[Search Tool] Quota exceeded. Returning fallback message.");
-            } else {
-                console.log("Search Tool Error:", searchErr.message);
-            }
-            return res.json({ text: "I'm having trouble searching for that right now." });
-        }
-      }
       return res.json({ toolCall: { name: calls[0].name, args: calls[0].args }, text: "Executing command." });
     }
 
-    return res.json({ text: response.text });
+    // Connect using LangChain to answer the user's question (Weather, Time, General Knowledge)
+    const chain = getLangchainConversation();
+    const lcResponse = await chain.invoke(
+      {
+        input: cleanTranscript,
+        current_time: new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
+        weather_info: currentWeatherData,
+        location_context: location ? JSON.stringify(location) : "Unknown",
+        nearest_hospital_context: "Not provided in this context"
+      },
+      { configurable: { sessionId: "voice-agent" } }
+    );
+
+    return res.json({ text: lcResponse.content });
   } catch (error: any) {
-    console.log("⚠️ Voice Agent Error:", error.message);
     if (error.message?.includes("quota") || error.message?.includes("Quota") || error.message?.includes("429") || error.message?.includes("503") || error.message?.includes("UNAVAILABLE")) {
-      return res.json({ text: "I'm currently operating offline due to capacity limits. I will connect you to emergency services now.", toolCall: { name: "execute_sos_dispatch", args: { type: "voice interaction fallback" } } });
+      console.log("⚠️ Voice Agent is at full capacity (Quota/Rate Limit). Using local Q&A fallback.");
+      const fallbackAns = findTrainedAnswer(transcript);
+      if (fallbackAns) {
+         return res.json({ text: fallbackAns });
+      }
+      return res.json({ text: "I'm experiencing high network traffic, but I'm here. How can I help you stay safe?" });
     }
+    console.log("⚠️ Voice Agent Auth/Request Issue.", error.message);
     // Fallback instead of sending status 500 to prevent opaque API_FAIL
     return res.json({ text: "I experienced a temporary disconnect from my systems, but I am still listening." });
   }
+  };
+
+  const nextMutex = voiceAgentMutex.then(() => executeVoiceAgent()).catch(() => executeVoiceAgent());
+  voiceAgentMutex = nextMutex;
 });
 
 // Cache for traffic updates to avoid slow AI/quota limits
@@ -1090,7 +1129,7 @@ app.post("/api/traffic-updates", async (req, res) => {
 
     let response;
     try {
-      response = await generateCall("gemini-3.5-flash"); // Flash 2.5 is faster for simple search grounding
+      response = await generateCall("gemini-2.5-flash-lite"); // Lite is faster for simple search grounding
     } catch (e: any) {
       if (e.message !== "QUOTA_EXCEEDED") {
         console.log("⚠️ Traffic Update fallback hit:", e.message);
@@ -1105,7 +1144,11 @@ app.post("/api/traffic-updates", async (req, res) => {
     trafficCache.set(cacheKey, { result: text, timestamp: Date.now() });
     res.json({ update: text });
   } catch (error: any) {
-    console.log("⚠️ Traffic Update Error:", error.message);
+    if (error.message?.includes("quota") || error.message?.includes("429")) {
+        console.log("⚠️ Traffic Update Rate Limit hit.");
+    } else {
+        console.log("⚠️ Traffic Update Error.");
+    }
     res.json({ update: "Traffic is currently moderate with standard delays. Always drive safely." });
   }
 });

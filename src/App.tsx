@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { ShieldCheck, PhoneCall, Activity, Zap, Navigation, Gauge, BarChart3, Heart, ClipboardList, FileText, ChevronRight, Info, AlertCircle, Mic, X, Bot } from 'lucide-react';
+import { ShieldCheck, PhoneCall, Activity, Zap, Navigation, Gauge, BarChart3, Heart, ClipboardList, FileText, ChevronRight, Info, AlertCircle, Mic, X, Bot, Menu, Settings, Map, GripVertical } from 'lucide-react';
 import { EmergencyUI } from './components/EmergencyUI';
 import { VoiceInterface } from './components/VoiceInterface';
 import { DispatchSummary } from './components/DispatchSummary';
@@ -25,6 +26,7 @@ const GOOGLE_MAPS_API_KEY =
 import { SOSTrigger } from './components/SOSTrigger';
 import { geoapifyService } from './services/geoapifyService';
 import { BatteryIndicator } from './components/BatteryIndicator';
+import TripHistory from './components/TripHistory';
 import { PermissionsModal } from './components/PermissionsModal';
 import { EmergencySOSModal } from './components/EmergencySOSModal';
 
@@ -33,12 +35,20 @@ import { io } from 'socket.io-client';
 const socket = io({ reconnection: true, reconnectionDelay: 1000, reconnectionAttempts: Infinity }); // connect to the same host
 
 export default function App() {
+  const navigate = useNavigate();
+  const locationPath = useLocation().pathname;
+  
   const [setupComplete, setSetupComplete] = useState(false);
   const [userPhone, setUserPhone] = useState("");
   const [isEmergency, setIsEmergency] = useState(false);
   const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [isSosModalOpen, setIsSosModalOpen] = useState(false);
   const [isChatbotModalOpen, setIsChatbotModalOpen] = useState(false);
+  const [isNavMenuOpen, setIsNavMenuOpen] = useState(false);
+  const [allowBackgroundMonitoring, setAllowBackgroundMonitoring] = useState(true);
+  const [allowVoiceFeedback, setAllowVoiceFeedback] = useState(true);
+  const allowVoiceFeedbackRef = useRef(true);
+  useEffect(() => { allowVoiceFeedbackRef.current = allowVoiceFeedback; }, [allowVoiceFeedback]);
 
   // Ping heartbeat to keep connection alive
   useEffect(() => {
@@ -51,16 +61,76 @@ export default function App() {
   }, []);
 
   const [dispatchData, setDispatchData] = useState<any>(null);
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number }>({ lat: 12.971598, lng: 77.594566 });
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [telemetry, setTelemetry] = useState({ x: 0, y: 0, z: 9.8 });
   const [peakG, setPeakG] = useState(1.0);
   const [systemHealth, setSystemHealth] = useState({ micActive: false, network: navigator.onLine });
   const [history, setHistory] = useState<any[]>([]);
 
+  const [offlineQueue, setOfflineQueue] = useState<{url: string, method: string, body: string}[]>(() => {
+    const saved = localStorage.getItem('roadsos_offline_queue');
+    return saved ? JSON.parse(saved) : [];
+  });
+  useEffect(() => {
+    localStorage.setItem('roadsos_offline_queue', JSON.stringify(offlineQueue));
+  }, [offlineQueue]);
+  const offlineQueueRef = useRef(offlineQueue);
+  useEffect(() => { offlineQueueRef.current = offlineQueue; }, [offlineQueue]);
+
+  const executeWithOfflineFallback = async (url: string, method: string, body: any) => {
+    if (!navigator.onLine) {
+      setOfflineQueue(prev => [...prev, { url, method, body: JSON.stringify(body) }]);
+      return;
+    }
+    try {
+       await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+       });
+    } catch (e) {
+       setOfflineQueue(prev => [...prev, { url, method, body: JSON.stringify(body) }]);
+    }
+  };
+
+  useEffect(() => {
+    (window as any).roadsosExecuteWithOfflineFallback = executeWithOfflineFallback;
+  }, [offlineQueue]);
+
   useEffect(() => {
     const handleMicState = (e: any) => setSystemHealth(s => ({ ...s, micActive: e.detail }));
-    const handleOnline = () => setSystemHealth(s => ({ ...s, network: true }));
-    const handleOffline = () => setSystemHealth(s => ({ ...s, network: false }));
+    const handleOnline = () => {
+       setSystemHealth(s => ({ ...s, network: true }));
+       const queue = offlineQueueRef.current;
+       if (queue.length > 0) {
+           if (allowVoiceFeedbackRef.current) {
+             const synth = window.speechSynthesis;
+             if (synth) {
+               const msg = new SpeechSynthesisUtterance("Internet restored. Synchronizing offline data.");
+               msg.volume = 1;
+               synth.speak(msg);
+             }
+           }
+           const processSync = async () => {
+               for (const req of queue) {
+                  try {
+                     await fetch(req.url, {
+                        method: req.method,
+                        headers: { 'Content-Type': 'application/json' },
+                        body: req.body
+                     });
+                     setOfflineQueue(prev => prev.filter(item => item !== req));
+                  } catch (e) {
+                     console.warn("Failed to sync queued req", e);
+                  }
+               }
+           };
+           processSync();
+       }
+    };
+    const handleOffline = () => {
+        setSystemHealth(s => ({ ...s, network: false }));
+    };
     
     window.addEventListener('health-mic-active', handleMicState);
     window.addEventListener('online', handleOnline);
@@ -99,11 +169,7 @@ export default function App() {
     const newState = !isDrivingMode;
     setIsDrivingMode(newState);
     try {
-      await fetch('/api/status/driving', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ active: newState })
-      });
+      await executeWithOfflineFallback('/api/status/driving', 'POST', { active: newState });
     } catch (e) {
       console.error("Failed to sync driving status:", e);
     }
@@ -111,11 +177,7 @@ export default function App() {
 
   useEffect(() => {
     // Initial sync
-    fetch('/api/status/driving', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ active: isDrivingMode })
-    }).catch(e => {
+    executeWithOfflineFallback('/api/status/driving', 'POST', { active: isDrivingMode }).catch(e => {
         // Suppress initial failed to fetch if server is just starting up, 
         // to avoid noisy console errors on hot reloads.
         console.warn("Initial driving sync pending server availability.");
@@ -131,14 +193,28 @@ export default function App() {
   const [countdownSeconds, setCountdownSeconds] = useState(5);
 
   const [showMedicalProfile, setShowMedicalProfile] = useState(false);
+  const [quickContactLabel, setQuickContactLabel] = useState("");
+  const [quickContactNumber, setQuickContactNumber] = useState("");
   const [medicalInfo, setMedicalInfo] = useState(() => {
     const saved = localStorage.getItem('roadsos_medical');
-    return saved ? JSON.parse(saved) : {
+    const parsed = saved ? JSON.parse(saved) : null;
+    let fallback = {
       name: 'User',
       bloodGroup: 'B+',
       allergies: 'None',
-      emergencyContact: '+91 7892375787'
+      emergencyContacts: [{ label: 'Primary', number: '+91 7892375787' }]
     };
+    if (parsed) {
+      if (parsed.emergencyContact && !parsed.emergencyContacts) {
+        parsed.emergencyContacts = [{ label: 'Primary', number: parsed.emergencyContact }];
+        delete parsed.emergencyContact;
+      }
+      if (!parsed.emergencyContacts) {
+         parsed.emergencyContacts = fallback.emergencyContacts;
+      }
+      return { ...fallback, ...parsed };
+    }
+    return fallback;
   });
   const medicalInfoRef = useRef(medicalInfo);
   useEffect(() => { medicalInfoRef.current = medicalInfo; }, [medicalInfo]);
@@ -259,7 +335,7 @@ export default function App() {
         if (document.visibilityState === 'visible') {
            fetchTrafficUpdatesSilently();
         }
-      }, 5 * 60 * 1000);
+      }, 3 * 60 * 1000);
     }
     
     const handleVisibilityChange = () => {
@@ -285,8 +361,23 @@ export default function App() {
     }
     lastTrafficFetchTimeRef.current = now;
     try {
-      const lat = userLocation.lat;
-      const lng = userLocation.lng;
+      let lat = userLocation.lat;
+      let lng = userLocation.lng;
+      try {
+          const getLiveGPS = () => new Promise<{lat: number, lng: number}>((resolve, reject) => {
+              navigator.geolocation.getCurrentPosition(
+                  pos => resolve({lat: pos.coords.latitude, lng: pos.coords.longitude}),
+                  err => reject(err),
+                  { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+              );
+          });
+          const livePos = await getLiveGPS();
+          lat = livePos.lat;
+          lng = livePos.lng;
+          setUserLocation(livePos);
+      } catch(e) {
+          console.warn("Live GPS fix failed for silent traffic updates:", e);
+      }
       const trafficData = await fetchLiveTrafficData(lat, lng);
       setTrafficUpdate(trafficData);
     } catch(e) {}
@@ -294,29 +385,96 @@ export default function App() {
 
   const fetchTrafficUpdates = async (locationName?: string) => {
     if (!userLocation && !locationName) return;
-    
+
     const now = Date.now();
     let isDebounced = false;
-    if (now - lastTrafficFetchTimeRef.current < 30000) {
+    
+    // Always bypass debounce if a specific location is requested
+    if (locationName) {
+       lastTrafficFetchTimeRef.current = now;
+    } else if (now - lastTrafficFetchTimeRef.current < 30000) {
       isDebounced = true;
     } else {
       lastTrafficFetchTimeRef.current = now;
     }
 
     setFetchingTraffic(true);
-    if (!isDebounced) {
-        setTrafficUpdate(null);
-    }
     setShowTrafficMap(true);
     try {
-      if (!isDebounced) {
-         const lat = userLocation?.lat || 12.9716;
-         const lng = userLocation?.lng || 77.5946;
-         const trafficData = await fetchLiveTrafficData(lat, lng);
-         setTrafficUpdate(trafficData);
+      let lat = userLocation?.lat;
+      let lng = userLocation?.lng;
+
+      if (locationName) {
+         try {
+             const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(locationName)}&format=json&limit=1`);
+             const data = await res.json();
+             if (data && data.length > 0) {
+                 lat = parseFloat(data[0].lat);
+                 lng = parseFloat(data[0].lon);
+             } else {
+                 speakNotification(`Could not find location ${locationName}. Please try again.`);
+                 setFetchingTraffic(false);
+                 return;
+             }
+         } catch(e) {
+             console.error("Geocoding failed for traffic updates:", e);
+         }
+      } else {
+         try {
+             const getLiveGPS = () => new Promise<{lat: number, lng: number}>((resolve, reject) => {
+                 navigator.geolocation.getCurrentPosition(
+                     pos => resolve({lat: pos.coords.latitude, lng: pos.coords.longitude}),
+                     err => reject(err),
+                     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                 );
+             });
+             const livePos = await getLiveGPS();
+             lat = livePos.lat;
+             lng = livePos.lng;
+             setUserLocation(livePos);
+         } catch(e) {
+             console.warn("Live GPS fix failed for traffic updates:", e);
+             if (!lat || !lng) {
+                 setTrafficUpdate({
+                    error: 'GPS is required to fetch traffic details near you. Please allow location access.',
+                    location: 'Unknown Location',
+                    lat: 0,
+                    lng: 0,
+                    trafficPresent: false,
+                    congestionLevel: 'Low',
+                    incidents: [],
+                    routes: [],
+                    fetchedAt: new Date().toLocaleTimeString(),
+                    radius: ''
+                 });
+                 setFetchingTraffic(false);
+                 return;
+             }
+         }
+      }
+
+      if (!lat || !lng) return;
+
+
+      if (!navigator.onLine) {
+         speakNotification("You are currently offline. Cannot retrieve live traffic updates. Please try again when internet is restored.");
+         setFetchingTraffic(false);
+         return;
       }
       
-      const latestData = trafficUpdate || (await fetchLiveTrafficData(userLocation?.lat || 12.9716, userLocation?.lng || 77.5946));
+      let activeTrafficData;
+      if (!isDebounced) {
+         activeTrafficData = await fetchLiveTrafficData(lat, lng);
+         setTrafficUpdate(activeTrafficData);
+      } else {
+         activeTrafficData = trafficUpdate;
+         if (!activeTrafficData) {
+             activeTrafficData = await fetchLiveTrafficData(lat, lng);
+             setTrafficUpdate(activeTrafficData);
+         }
+      }
+      
+      const latestData = activeTrafficData;
 
       // Speak the traffic update
       if ('speechSynthesis' in window) {
@@ -373,37 +531,44 @@ export default function App() {
     if (isBroadcastingRef.current) return;
     isBroadcastingRef.current = true;
     const reason = "Secret Distress word NEON triggered";
-    saveLogEntry(reason, userLocation);
-    const targetNumbers = ["+916361892311", "+917892375787"]; // NEON specific targets
+
+    // Provide a way to get the latest location if userLocation is null or stale
+    let loc = null;
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000, maximumAge: 10000 });
+      });
+      loc = { lat: position.coords.latitude, lng: position.coords.longitude };
+    } catch {
+      loc = null; // fallback to whatever we can if we had a ref
+    }
+
+    saveLogEntry(reason, loc);
+    const targetNumbers = ["+916361892311"];
 
     let addressStr = "Unknown Location";
-    if (userLocation) {
+    if (loc) {
       try {
-        const addr = await geoapifyService.reverseGeocode(userLocation.lat, userLocation.lng);
-        addressStr = addr;
+         const addr = await geoapifyService.reverseGeocode(loc.lat, loc.lng);
+         addressStr = addr;
       } catch (e) {
-        addressStr = `${userLocation.lat.toFixed(4)}, ${userLocation.lng.toFixed(4)}`;
+         addressStr = `${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)}`;
       }
     }
-    
-    setIsSosModalOpen(true);
 
-    const smsMessage = `SECRET DISTRESS ALERT (NEON):
-Location: ${userLocation ? `${addressStr} (https://www.google.com/maps?q=${userLocation.lat},${userLocation.lng})` : 'Unknown Location'}
+    const mInfo = medicalInfoRef.current;
+
+    const smsMessage = `SECRET DISTRESS ALERT: BOB is in danger.
+Location: ${loc ? `${addressStr} (https://www.google.com/maps?q=${loc.lat},${loc.lng})` : 'Unknown Location'}
 Time: ${new Date().toLocaleTimeString()}
-Patient: ${medicalInfo.name || 'BOB'}
-Blood Group: ${medicalInfo.bloodGroup || 'O+'}
-IMMEDIATE ASSISTANCE REQUIRED. REPLIES EXPECTED.`;
+Recent Trip History: No Recent Trip History Available
+IMMEDIATE ASSISTANCE REQUIRED.`;
 
     try {
       // 1. Send SMS to all targets
-      await fetch('/api/sos/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+      await executeWithOfflineFallback('/api/sos/notify', 'POST', { 
           recipients: targetNumbers, 
           message: smsMessage
-        })
       });
       
       // Delay slightly between SMS and Calls to ensure Twilio network order
@@ -411,11 +576,7 @@ IMMEDIATE ASSISTANCE REQUIRED. REPLIES EXPECTED.`;
 
       // 2. Initiate Call concurrently for all targets
       await Promise.all(targetNumbers.map(target => 
-        fetch('/api/sos/call-neon', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ to: target, patientName: medicalInfo.name || 'BOB' })
-        })
+        executeWithOfflineFallback('/api/sos/call-neon', 'POST', { to: target, patientName: mInfo.name || 'BOB' })
       ));
       
       console.log("[Neon Distress] SMS and Calls sent successfully.");
@@ -436,41 +597,59 @@ IMMEDIATE ASSISTANCE REQUIRED. REPLIES EXPECTED.`;
       setIsSosModalOpen(true);
     }
 
-    saveLogEntry(reason, userLocation);
-    // Force the use of the user's verified number for distress protocols
-    const targetNumbers = targetOverride ? [targetOverride] : ["+916361892311", "+917892375787"]; 
-
+    const mInfo = medicalInfoRef.current;
     
+    // Provide a way to get the latest location if userLocation is null or stale
+    let loc = null;
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000, maximumAge: 10000 });
+      });
+      loc = { lat: position.coords.latitude, lng: position.coords.longitude };
+    } catch {
+      loc = null; // fallback to whatever we can if we had a ref
+    }
+    
+    saveLogEntry(reason, loc);
+
+    const mappedContacts = (mInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n && /^\\+?[\\d\\s()-]{7,20}$/.test(n));
+    const targetNumbers = targetOverride ? [targetOverride] : (mappedContacts.length > 0 ? mappedContacts : ["+916361892311"]);
+
     let addressStr = "Unknown Location";
     let locationDescription = "Location data is currently unavailable.";
     
-    if (userLocation) {
-      locationDescription = `at latitude ${userLocation.lat.toFixed(6)} and longitude ${userLocation.lng.toFixed(6)}`;
+    if (loc) {
+      locationDescription = `at latitude ${loc.lat.toFixed(6)} and longitude ${loc.lng.toFixed(6)}`;
       try {
-        const resolvedAddress = await geoapifyService.reverseGeocode(userLocation.lat, userLocation.lng);
+        const resolvedAddress = await geoapifyService.reverseGeocode(loc.lat, loc.lng);
         if (resolvedAddress && resolvedAddress !== "Unknown Location") {
           addressStr = resolvedAddress;
-          locationDescription = `${resolvedAddress}, at latitude ${userLocation.lat.toFixed(6)} and longitude ${userLocation.lng.toFixed(6)}`;
+          locationDescription = `${resolvedAddress}, at latitude ${loc.lat.toFixed(6)} and longitude ${loc.lng.toFixed(6)}`;
         }
       } catch (err) {
         console.error("Geocoding failed inside distress broadcast:", err);
       }
     }
 
-    const distressCallMessage = "BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help.";
+    const isHelpCommand = reason.includes("HELP spoken 3 times");
+    const distressCallMessage = isHelpCommand ? "BOB needs help. BOB needs help." : "BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help.";
     
     const smsMessage = `DISTRESS ALERT: ${distressCallMessage}
-Location: ${userLocation ? `${addressStr} (https://www.google.com/maps?q=${userLocation.lat},${userLocation.lng})` : 'Unknown Location'}
+Location: ${loc ? `${addressStr} (https://www.google.com/maps?q=${loc.lat},${loc.lng})` : 'Unknown Location'}
 Time: ${new Date().toLocaleTimeString()}
-Patient: ${medicalInfo.name}
-Patient Phone: ${userPhone || 'Not Provided'}
-Blood Group: ${medicalInfo.bloodGroup}
+Patient: ${mInfo.name}
+Blood Group: ${mInfo.bloodGroup}
 IMMEDIATE ASSISTANCE REQUIRED.
 If information is received and ambulance is sent press 1`;
 
     try {
-      if (!silent) {
-        speakNotification("Initiating emergency broadcast protocols.");
+      if (!silent || isHelpCommand) {
+        if (isHelpCommand && 'speechSynthesis' in window) {
+           speakNotification("BOB needs help.");
+           setTimeout(() => speakNotification("BOB needs help."), 2000);
+        } else if (!silent) {
+           speakNotification("Initiating emergency broadcast protocols.");
+        }
       }
       
       // Delay slightly so the voice notification isn't abruptly cut off, but do NOT
@@ -478,13 +657,9 @@ If information is received and ambulance is sent press 1`;
       await new Promise(resolve => setTimeout(resolve, 1500));
 
       // Send SMS
-      await fetch('/api/sos/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+      await executeWithOfflineFallback('/api/sos/notify', 'POST', { 
           recipients: targetNumbers, 
           message: smsMessage 
-        })
       });
 
       // Delay slightly between SMS and Calls to ensure correct delivery order
@@ -492,27 +667,19 @@ If information is received and ambulance is sent press 1`;
 
       // Initiate Call concurrently for all targets
       await Promise.all(targetNumbers.map(targetNumber => 
-        fetch('/api/sos/call-initiate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
+        executeWithOfflineFallback('/api/sos/call-initiate', 'POST', { 
             to: targetNumber,
-            message: "Emergency Alert. Patient in danger. Please press 1 to confirm dispatch.",
+            message: isHelpCommand ? distressCallMessage : "Emergency Alert. Patient in danger. Please press 1 to confirm dispatch.",
             host: window.location.origin
-          })
         })
       ));
 
       // Send PDF Report to targets via messenger
       await Promise.all(targetNumbers.map(targetNumber => 
-        fetch('/api/sos/send-report', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        executeWithOfflineFallback('/api/sos/send-report', 'POST', {
             responder: targetNumber,
             logs: logsRef.current.slice(0, 50),
             medicalInfo: medicalInfoRef.current
-          })
         }).catch(err => console.error("Report sending failed for " + targetNumber, err))
       ));
 
@@ -554,7 +721,7 @@ If information is received and ambulance is sent press 1`;
         ['Name', medicalInfo.name || 'N/A'],
         ['Blood Group', medicalInfo.bloodGroup || 'N/A'],
         ['Allergies', medicalInfo.allergies || 'None'],
-        ['Emergency Contact', medicalInfo.emergencyContact || 'N/A']
+        ['Emergency Contacts', medicalInfo.emergencyContacts ? medicalInfo.emergencyContacts.map((c: any) => `${c.label}: ${c.number}`).join(', ') : 'N/A']
       ],
       theme: 'grid',
       headStyles: { fillColor: [139, 92, 246] }
@@ -724,6 +891,7 @@ If information is received and ambulance is sent press 1`;
   const [initialVoiceState, setInitialVoiceState] = useState<'NORMAL' | 'HEARD_HELP' | 'FIRST_AID_ACTIVE' | 'DISPATCH_PENDING' | 'HELP_ARRIVING'>('NORMAL');
 
   const speakNotification = (text: string) => {
+    if (!allowVoiceFeedbackRef.current) return;
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel(); // Cancel any ongoing speech
       const utterance = new SpeechSynthesisUtterance(text);
@@ -822,7 +990,8 @@ If information is received and ambulance is sent press 1`;
     isBroadcastingRef.current = true;
 
     saveLogEntry("Secret distress hold trigger (SOS Hold)", userLocation);
-    const targetNumbers = ["+916361892311", "+917892375787"];
+    const mappedContacts = (medicalInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n && /^\\+?[\\d\\s()-]{7,20}$/.test(n));
+    const targetNumbers = mappedContacts.length > 0 ? mappedContacts : ["+916361892311", "+917892375787"];
     
     let addressStr = "Unknown Location";
     if (userLocation) {
@@ -845,13 +1014,9 @@ If information is received and ambulance is sent press 1`;
 
     try {
       // 1. Send SMS to targets
-      await fetch('/api/sos/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+      await executeWithOfflineFallback('/api/sos/notify', 'POST', { 
           recipients: targetNumbers, 
           message: smsMessage 
-        })
       });
 
       // Delay slightly between SMS and Calls to ensure Twilio network order
@@ -859,27 +1024,19 @@ If information is received and ambulance is sent press 1`;
 
       // 2. Initiate Call concurrently for all targets
       await Promise.all(targetNumbers.map(targetNumber => 
-        fetch('/api/sos/call-initiate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
+        executeWithOfflineFallback('/api/sos/call-initiate', 'POST', { 
             to: targetNumber,
             message: callMessage,
             host: window.location.origin
-          })
         })
       ));
 
       // 3. Send PDF Report to targets via messenger
       await Promise.all(targetNumbers.map(targetNumber => 
-        fetch('/api/sos/send-report', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        executeWithOfflineFallback('/api/sos/send-report', 'POST', {
             responder: targetNumber,
             logs: logsRef.current.slice(0, 50),
             medicalInfo: medicalInfoRef.current
-          })
         }).catch(err => console.error("Report sending failed for " + targetNumber, err))
       ));
 
@@ -932,6 +1089,15 @@ If information is received and ambulance is sent press 1`;
         const cleanInterim = normalizeStr(interimTranscript);
         const cleanCombined = normalizeStr(finalTranscript + ' ' + interimTranscript);
 
+        // Unified Rolling Transcript for Core Panic Words (Fallback & Safety Word Check)
+        if (cleanFinal.length > 0) {
+           rollingTranscriptsRef.current.push({ text: cleanFinal, time: Date.now() });
+        }
+        
+        const currentNow = Date.now();
+        rollingTranscriptsRef.current = rollingTranscriptsRef.current.filter(x => currentNow - x.time <= 20000);
+        const rollingText = rollingTranscriptsRef.current.map(x => x.text).join(' ') + ' ' + cleanInterim;
+
         // 1. Instant Wake Word Checks (Interim or Final)
         if (cleanCombined.includes("chatbot") || cleanCombined.includes("chat bot")) {
            console.log("[Wake Word] CHATBOT detected, opening Voice Assistant.");
@@ -969,18 +1135,30 @@ If information is received and ambulance is sent press 1`;
         }
 
         const neonRegex = /\b(neon|leon|ne on|knee on|nian|beyond|new one|nyon|neeon)\b/g;
-        if ((cleanCombined.match(neonRegex) || []).length >= 2 && !isBroadcastingRef.current) {
-            console.log("[Wake Word] NEON 2x Triggered instantly.");
-            saveLogEntry(`Secret word NEON triggered 2 times`, userLocation);
-            executeNeonDistress();
+        if ((rollingText.match(neonRegex) || []).length >= 3 && !isBroadcastingRef.current) {
+            const recentlyTriggered = logsRef.current.some(l => 
+                l.reason.includes("NEON triggered 3 times") && (Date.now() - new Date(l.timestamp).getTime() < 60000)
+            );
+            if (!recentlyTriggered) {
+                console.log("[Wake Word] NEON 3x Triggered instantly.");
+                saveLogEntry(`Secret word NEON triggered 3 times`, userLocation);
+                executeNeonDistress();
+            }
+            rollingTranscriptsRef.current = [];
             return;
         }
 
         const helpRegex = /\b(help|helps|helping|howp|health)\b/g;
-        if ((cleanCombined.match(helpRegex) || []).length >= 2 && !isBroadcastingRef.current) {
-            console.log("[Wake Word] HELP 2x Triggered instantly.");
-            saveLogEntry(`Emergency word HELP triggered 2 times`, userLocation);
-            executeDistressBroadcast("Voice activated emergency distress alert (HELP spoken 2 times)", false);
+        if ((rollingText.match(helpRegex) || []).length >= 3 && !isBroadcastingRef.current) {
+            const recentlyTriggered = logsRef.current.some(l => 
+                l.reason.includes("HELP triggered 3 times") && (Date.now() - new Date(l.timestamp).getTime() < 60000)
+            );
+            if (!recentlyTriggered) {
+                console.log("[Wake Word] HELP 3x Triggered. Initiating distress.");
+                saveLogEntry(`Emergency word HELP triggered 3 times`, userLocation);
+                executeDistressBroadcast("Voice activated emergency distress alert (HELP spoken 3 times)", false);
+            }
+            rollingTranscriptsRef.current = [];
             return;
         }
 
@@ -1017,15 +1195,6 @@ If information is received and ambulance is sent press 1`;
           if (canceledSomething) return;
         }
 
-        // Unified Rolling Transcript for Core Panic Words (Fallback & Safety Word Check)
-        if (cleanFinal.length > 0) {
-           rollingTranscriptsRef.current.push({ text: cleanFinal, time: Date.now() });
-        }
-        
-        const currentNow = Date.now();
-        rollingTranscriptsRef.current = rollingTranscriptsRef.current.filter(x => currentNow - x.time <= 20000);
-        const rollingText = rollingTranscriptsRef.current.map(x => x.text).join(' ') + ' ' + cleanInterim;
-
         const safeWordNormalized = safetyWord.toLowerCase().trim();
         if (safeWordNormalized.length > 0) {
             const matches = (rollingText.match(new RegExp(`\\b${safeWordNormalized}\\b`, 'g')) || []).length;
@@ -1038,10 +1207,13 @@ If information is received and ambulance is sent press 1`;
         }
 
         // 3. Process robust occurrences on FINALized results (to prevent duplicate interim counts)
-        if (cleanFinal.length > 0) {
+        if (cleanCombined.length > 0) {
+           const executeAndClear = () => { if (backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); };
+           const _realCleanFinal = cleanCombined;
+           const cleanCombinedAlias = cleanCombined;
            // Handle Safety Verification Flow responses
            if (isSafetyCheckingRef.current) {
-             const lowerVal = cleanFinal.toLowerCase();
+             const lowerVal = cleanCombined.toLowerCase();
              if (
                lowerVal.includes("i am ok") || 
                lowerVal.includes("im ok") || 
@@ -1059,7 +1231,7 @@ If information is received and ambulance is sent press 1`;
              ) {
                console.log("[Safety Probe] User confirmed: I am OK. Cancelling safety features.");
                cancelSafetyVerification();
-               return;
+               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
              }
              if (
                lowerVal.includes("i need help") || 
@@ -1069,82 +1241,100 @@ If information is received and ambulance is sent press 1`;
              ) {
                console.log("[Safety Probe] User stated: I NEED HELP. Triggering HELP functionality.");
                executeHelpFunctionality("User said I NEED HELP during safety verification probe");
-               return;
+               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
              }
            }
 
            if (isWaitingForIncidentRef.current) {
-             handleIncidentResponse(cleanFinal);
-             return;
+             handleIncidentResponse(cleanCombined);
+             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            }
 
            // Voice Controls for Features (Alexa style)
-           if (cleanFinal.includes("turn on driving mode") || cleanFinal.includes("start driving mode") || cleanFinal.includes("enable driving mode")) {
+           if (cleanCombined.includes("turn on driving mode") || cleanCombined.includes("start driving mode") || cleanCombined.includes("enable driving mode")) {
              if (!isDrivingMode) {
                toggleDrivingMode(); // will speak 'Driving mode engaged'
              } else {
                speakNotification("Driving mode is already on.");
              }
-             return;
-           } else if (cleanFinal.includes("turn off driving mode") || cleanFinal.includes("stop driving mode") || cleanFinal.includes("disable driving mode")) {
+             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+           } else if (cleanCombined.includes("turn off driving mode") || cleanCombined.includes("stop driving mode") || cleanCombined.includes("disable driving mode")) {
              if (isDrivingMode) {
                toggleDrivingMode();
              } else {
                speakNotification("Driving mode is already off.");
              }
-             return;
+             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            }
            
-           if (cleanFinal.includes("open voice assistant") || cleanFinal.includes("open chatbot") || cleanFinal.includes("start voice assistant")) {
+           if (cleanCombined.includes("open voice assistant") || cleanCombined.includes("open chatbot") || cleanCombined.includes("start voice assistant")) {
              setIsVoiceActive(true);
              speakNotification("Voice assistant opened. How can I help you?");
-             return;
-           } else if (cleanFinal.includes("close voice assistant") || cleanFinal.includes("close chatbot") || cleanFinal.includes("stop voice assistant") || cleanFinal.includes("close assistant") || cleanFinal.includes("stop chatbot") || cleanFinal.includes("exit assistant") || cleanFinal.includes("exit chatbot")) {
+             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+           } else if (cleanCombined.includes("close voice assistant") || cleanCombined.includes("close chatbot") || cleanCombined.includes("stop voice assistant") || cleanCombined.includes("close assistant") || cleanCombined.includes("stop chatbot") || cleanCombined.includes("exit assistant") || cleanCombined.includes("exit chatbot")) {
              setIsVoiceActive(false);
              setIsChatbotModalOpen(false);
              setIsAIFirstAidActive(false);
              isAIFirstAidActiveRef.current = false;
              speakNotification("Assistant closed.");
-             return;
+             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            }
            
-           if (cleanFinal.includes("open traffic") || cleanFinal.includes("open map") || cleanFinal.includes("show map")) {
+           if (cleanCombined.includes("open traffic") || cleanCombined.includes("open map") || cleanCombined.includes("show map")) {
              setShowTrafficMap(true);
              speakNotification("Map view opened.");
-           } else if (cleanFinal.includes("close traffic") || cleanFinal.includes("close map") || cleanFinal.includes("hide map")) {
+           } else if (cleanCombined.includes("close traffic") || cleanCombined.includes("close map") || cleanCombined.includes("hide map")) {
              setShowTrafficMap(false);
              setTrafficUpdate(null);
              speakNotification("Map view closed.");
            }
 
+            const routeMatches = [
+              { keywords: ['home', 'dashboard'], path: '/' },
+              { keywords: ['trip history', 'history'], path: '/trip-history' },
+              { keywords: ['accelerometer', 'telemetry', 'sensor'], path: '/accelerometer' },
+              { keywords: ['rapid response', 'response'], path: '/rapid-response' },
+              { keywords: ['medical profile', 'medical'], path: '/medical-profile' },
+              { keywords: ['first aid guide', 'first aid', 'first-aid'], path: '/first-aid' },
+              { keywords: ['accident logs', 'accident log', 'logs'], path: '/accident-logs' },
+              { keywords: ['settings', 'preferences'], path: '/settings' }
+            ];
+            for (const route of routeMatches) {
+                if (route.keywords.some(kw => cleanCombined.includes(`open ${kw}`) || cleanCombined.includes(`show ${kw}`) || cleanCombined.includes(`go to ${kw}`))) {
+                    navigate(route.path);
+                    speakNotification(`Opening ${route.keywords[0]}...`);
+                    if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+                }
+            }
+
            if (isWaitingForEmergencyChoiceRef.current) {
-             if (cleanFinal.includes("emergency") || cleanFinal.includes("number") || cleanFinal.includes("contact")) {
+             if (cleanCombined.includes("emergency") || cleanCombined.includes("number") || cleanCombined.includes("contact")) {
                isWaitingForEmergencyChoiceRef.current = false;
                speakNotification("Calling emergency contact.");
                executeDistressBroadcast("User requested emergency contact via voice", false);
-               return;
-             } else if (cleanFinal.includes("nearest") || cleanFinal.includes("hospital")) {
+               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+             } else if (cleanCombined.includes("nearest") || cleanCombined.includes("hospital")) {
                isWaitingForEmergencyChoiceRef.current = false;
                speakNotification("Calling nearest hospital.");
                // It calls the specific number but displays the name via Places API in callNearestHospital
                callNearestHospital("+917892375787"); 
-               return;
+               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
              }
            }
 
-           if (cleanFinal.includes("i had an accident") || cleanFinal.includes("had an accident") || cleanFinal === "accident") {
+           if (cleanCombined.includes("i had an accident") || cleanCombined.includes("had an accident") || cleanCombined === "accident") {
              isWaitingForEmergencyChoiceRef.current = true;
              speakNotification("Should I contact emergency number or nearest hospital?");
-             return;
+             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            }
 
            // App UI Commands
-           if (cleanFinal === "hello" || cleanFinal.includes("hello")) {
+           if (cleanCombined === "hello" || cleanCombined.includes("hello")) {
                console.log("Voice Command: Hello");
                speakNotification("HEILO bob how are you doing!");
            }
 
-           if (cleanFinal === "refresh" || cleanFinal.includes("refresh the app") || cleanFinal.includes("refresh page")) {
+           if (cleanCombined === "refresh" || cleanCombined.includes("refresh the app") || cleanCombined.includes("refresh page")) {
                console.log("Voice Command: Refresh");
                speakNotification("Refreshing the application.");
                setTimeout(() => {
@@ -1152,38 +1342,35 @@ If information is received and ambulance is sent press 1`;
                }, 1000);
            }
 
-           const getUpdateMatch = cleanFinal.match(/(?:get updates|get updates ones|get update|traffic updates?)(?:\s+(?:about|on|in|for|at)\s+(.+))?/i);
+           const getUpdateMatch = cleanCombined.match(/(?:get updates|get updates ones|get update|traffic updates?)(?:\s+(?:about|on|in|for|at)\s+(.+))?/i);
            if (getUpdateMatch) {
                console.log("Voice Command: Get Updates");
                const locationName = getUpdateMatch[1];
-               if (locationName) {
-                 speakNotification(`Getting traffic updates for ${locationName}`);
-               } else {
-                 speakNotification(`Getting traffic updates for your current location`);
-               }
                fetchTrafficUpdates(locationName);
                const uiEl = document.getElementById("traffic-updates-section");
                if (uiEl) uiEl.scrollIntoView({ behavior: 'smooth' });
+               rollingTranscriptsRef.current = [];
+               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            }
 
-           if (cleanFinal.includes("go to map search")) {
+           if (cleanCombined.includes("go to map search")) {
                console.log("Voice Command: Go to Map Search");
                isWaitingForMapSearchRef.current = true;
                const mapEl = document.getElementById("google-map-section");
                if (mapEl) mapEl.scrollIntoView({ behavior: 'smooth' });
                speakNotification("Say a place name to search.");
-           } else if (isWaitingForMapSearchRef.current && cleanFinal.trim().length > 0) {
-               console.log("Voice Map Search Query:", cleanFinal);
-               setVoiceMapQuery(cleanFinal.trim());
+           } else if (isWaitingForMapSearchRef.current && cleanCombined.trim().length > 0) {
+               console.log("Voice Map Search Query:", cleanCombined);
+               setVoiceMapQuery(cleanCombined.trim());
                isWaitingForMapSearchRef.current = false;
-               speakNotification(`Searching map for ${cleanFinal.trim()}`);
+               speakNotification(`Searching map for ${cleanCombined.trim()}`);
            }
 
            if (isAIFirstAidActiveRef.current) {
              if (aiFirstAidTimeoutRef.current) clearTimeout(aiFirstAidTimeoutRef.current);
-             console.log(`[AI First Aid] Processing incident: "${cleanFinal}"`);
-             handleAIFirstAid(cleanFinal);
-             return; // Stop processing further commands once we consume this for AI
+             console.log(`[AI First Aid] Processing incident: "${cleanCombined}"`);
+             handleAIFirstAid(cleanCombined);
+             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return; // Stop processing further commands once we consume this for AI
            }
          }
       };
@@ -1208,7 +1395,9 @@ If information is received and ambulance is sent press 1`;
       };
 
       backgroundRecognitionRef.current.onerror = (event: any) => {
-        console.warn("[Watchdog] Speech Recognition Error:", event.error);
+        if (event.error !== 'no-speech') {
+          console.warn("[Watchdog] Speech Recognition Error:", event.error);
+        }
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
           // fatal error
           return;
@@ -1267,32 +1456,29 @@ If information is received and ambulance is sent press 1`;
   }, []);
 
   useEffect(() => {
-    // GPS Fix with timeout fallback to ensure maps function immediately in a sandboxed preview or closed space
-    const fallbackTimer = setTimeout(() => {
-      setUserLocation(prev => {
-        if (!prev) {
-          console.log("[GPS Fallback] Geolocation timed out, choosing default coordinates");
-          return { lat: 12.971598, lng: 77.594566 }; // Default Bangalore Central
-        }
-        return prev;
-      });
-    }, 4000);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && !allowBackgroundMonitoring) {
+        setIsMonitoring(false);
+      } else if (document.visibilityState === 'visible' && motionPermission === 'granted') {
+        setIsMonitoring(true);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [allowBackgroundMonitoring, motionPermission]);
 
+  useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        clearTimeout(fallbackTimer);
         setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
       },
       (err) => {
-        console.warn("[GPS Fallback Alert] Geolocation failed:", err);
-        clearTimeout(fallbackTimer);
-        setUserLocation(prev => prev || { lat: 12.971598, lng: 77.594566 });
+        console.warn("[GPS] Geolocation failed:", err);
       },
-      { enableHighAccuracy: true, timeout: 5000 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
 
     return () => {
-      clearTimeout(fallbackTimer);
       navigator.geolocation.clearWatch(watchId);
     };
   }, []);
@@ -1374,6 +1560,14 @@ If information is received and ambulance is sent press 1`;
       userAddress: data.facility.address || "Current GPS Location"
     });
   };
+
+  useEffect(() => {
+    if (setupComplete) {
+       const utterance = new SpeechSynthesisUtterance("Road S O S is active.");
+       utterance.rate = 1.0;
+       window.speechSynthesis.speak(utterance);
+    }
+  }, [setupComplete]);
 
   if (!setupComplete) {
     return <PermissionsModal onComplete={(phone) => { setUserPhone(phone); setSetupComplete(true); }} />;
@@ -1691,7 +1885,7 @@ If information is received and ambulance is sent press 1`;
               </div>
             </div>
             <div className="flex flex-col items-end gap-2 text-right">
-              <div className="flex gap-2">
+              <div className="flex gap-2 relative">
                 <button 
                   onClick={() => setIsChatbotModalOpen(true)}
                   className="px-4 py-2 bg-indigo-500 hover:bg-indigo-400 text-white rounded-full text-xs font-black uppercase tracking-widest shadow-lg shadow-indigo-500/30 transition-all flex items-center gap-2 border border-white/10"
@@ -1710,6 +1904,54 @@ If information is received and ambulance is sent press 1`;
                   <Navigation size={14} className={isDrivingMode ? 'animate-bounce' : ''} />
                   {isDrivingMode ? 'Driving: Do Not Disturb' : 'Driving Mode: OFF'}
                 </button>
+                
+                <button
+                  onClick={() => setIsNavMenuOpen(!isNavMenuOpen)}
+                  className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-full transition-colors flex items-center justify-center relative z-50"
+                  aria-label="Navigation Menu"
+                >
+                  {isNavMenuOpen ? <X size={18} className="text-slate-400" /> : <Menu size={18} className="text-slate-400" />}
+                </button>
+
+                <AnimatePresence>
+                  {isNavMenuOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      className="absolute right-0 top-full mt-3 w-64 bg-slate-900/95 backdrop-blur-xl border border-slate-800 rounded-3xl shadow-2xl py-3 z-[100] text-left divide-y divide-slate-800/50"
+                    >
+                      {[
+                        { id: '/', label: 'Home', icon: <ShieldCheck size={16} />, color: 'text-blue-400 bg-blue-500/10 hover:bg-blue-500/20' },
+                        { id: '/trip-history', label: 'Trip History', icon: <Map size={16} />, color: 'text-indigo-400 bg-indigo-500/10 hover:bg-indigo-500/20' },
+                        { id: '/accelerometer', label: 'Telemetry', icon: <Activity size={16} />, color: 'text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20' },
+                        { id: '/rapid-response', label: 'Rapid Response', icon: <Zap size={16} />, color: 'text-red-400 bg-red-500/10 hover:bg-red-500/20' },
+                        { id: '/medical-profile', label: 'Medical Profile', icon: <Heart size={16} />, color: 'text-rose-400 bg-rose-500/10 hover:bg-rose-500/20' },
+                        { id: '/first-aid', label: 'First-Aid Guide', icon: <ClipboardList size={16} />, color: 'text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20' },
+                        { id: '/accident-logs', label: 'Accident Logs', icon: <FileText size={16} />, color: 'text-purple-400 bg-purple-500/10 hover:bg-purple-500/20' },
+                        { id: '/settings', label: 'Settings', icon: <Settings size={16} />, color: 'text-slate-400 bg-slate-500/10 hover:bg-slate-500/20' }
+                      ].map((item, idx) => (
+                        <button
+                          key={item.id}
+                          onClick={() => {
+                            setIsNavMenuOpen(false);
+                            navigate(item.id);
+                          }}
+                          className={`w-full flex items-center gap-4 px-5 py-3 transition-all text-xs font-black uppercase tracking-widest group ${
+                            locationPath === item.id 
+                              ? 'bg-slate-800/80 text-white border-l-2 border-l-blue-500 shadow-inner' 
+                              : 'text-slate-400 hover:text-white hover:bg-slate-800/40 border-l-2 border-transparent'
+                          }`}
+                        >
+                          <div className={`p-2 rounded-xl transition-colors ${item.color} ${locationPath === item.id ? 'scale-110 shadow-lg' : ''}`}>
+                            {item.icon}
+                          </div>
+                          <span className="flex-1 text-left">{item.label}</span>
+                        </button>
+                      ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
               
               {!isMonitoring && motionPermission !== 'unsupported' && (
@@ -1868,7 +2110,8 @@ If information is received and ambulance is sent press 1`;
             </div>
           )}
 
-          <section id="traffic-updates-section" className="mb-8 flex flex-col gap-4 w-full">
+          {locationPath === '/' && (
+            <section id="traffic-updates-section" className="mb-8 flex flex-col gap-4 w-full">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-slate-900 border border-slate-800 p-4 rounded-3xl gap-4">
               <div>
                 <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Live Traffic & Hazards</h3>
@@ -1912,8 +2155,12 @@ If information is received and ambulance is sent press 1`;
               )}
             </div>
           </section>
+          )}
 
-          <section className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-12">
+          {locationPath === '/trip-history' && <TripHistory />}
+
+          {locationPath === '/accelerometer' && (
+          <section id="accelerometer-section" className="mb-12">
             <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl shadow-xl overflow-hidden relative flex flex-col">
               <div className="flex items-start justify-between mb-8 relative z-10">
                 <div className="flex flex-col">
@@ -1978,8 +2225,11 @@ If information is received and ambulance is sent press 1`;
                 />
               </div>
             </div>
+          </section>
+          )}
 
-            <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl shadow-xl flex flex-col items-center justify-center relative overflow-hidden">
+          {locationPath === '/rapid-response' && (
+            <div id="rapid-response-section" className="bg-slate-900 border border-slate-800 p-6 rounded-3xl shadow-xl flex flex-col items-center justify-center relative overflow-hidden mb-12">
               <div className="absolute top-0 left-0 w-full h-full bg-red-500/5 pointer-events-none" />
               <div className="z-10 text-center mb-6">
                 <div className="flex items-center justify-center gap-2 text-slate-400 mb-2">
@@ -2013,9 +2263,10 @@ If information is received and ambulance is sent press 1`;
                 Mock Crash Sensor
               </button>
             </div>
-          </section>
+          )}
 
-          <section className="bg-slate-900 border border-slate-800 rounded-3xl p-8 mb-8">
+          {locationPath === '/medical-profile' && (
+          <section id="medical-profile-section" className="bg-slate-900 border border-slate-800 rounded-3xl p-8 mb-8">
             <div className="flex items-center justify-between mb-8">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-red-500/20 rounded-xl">
@@ -2057,14 +2308,96 @@ If information is received and ambulance is sent press 1`;
                   </div>
                 </div>
                 <div className="space-y-4">
-                   <div>
-                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1 block">Emergency Contact</label>
-                    <input 
-                      type="text" 
-                      value={medicalInfo.emergencyContact}
-                      onChange={(e) => setMedicalInfo({...medicalInfo, emergencyContact: e.target.value})}
-                      className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-3 text-sm font-bold focus:border-blue-500 outline-none"
-                    />
+                  <div className="space-y-4">
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block flex justify-between">
+                      <span>Emergency Contacts</span>
+                      <span className="text-[8px]">DRAG TO REORDER</span>
+                    </label>
+                    <div className="space-y-2">
+                      {(medicalInfo.emergencyContacts || []).map((contact: any, idx: number) => (
+                        <div 
+                          key={`${idx}-${contact.number}`}
+                          className="flex gap-2 items-center cursor-move"
+                          draggable
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('text/plain', idx.toString());
+                            e.currentTarget.classList.add('opacity-50');
+                          }}
+                          onDragEnd={(e) => {
+                            e.currentTarget.classList.remove('opacity-50');
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.currentTarget.classList.remove('border-blue-500');
+                            const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+                            if (isNaN(sourceIdx) || sourceIdx === idx) return;
+                            const newContacts = [...medicalInfo.emergencyContacts];
+                            const [removed] = newContacts.splice(sourceIdx, 1);
+                            newContacts.splice(idx, 0, removed);
+                            setMedicalInfo({ ...medicalInfo, emergencyContacts: newContacts });
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.currentTarget.classList.add('border-blue-500');
+                          }}
+                          onDragLeave={(e) => {
+                            e.currentTarget.classList.remove('border-blue-500');
+                          }}
+                        >
+                          <div className="text-slate-500 hover:text-white transition-colors">
+                            <GripVertical size={16} />
+                          </div>
+                          <input
+                             type="text"
+                             placeholder="Label"
+                             value={contact.label}
+                             onChange={(e) => {
+                               const newContacts = [...medicalInfo.emergencyContacts];
+                               newContacts[idx].label = e.target.value;
+                               setMedicalInfo({ ...medicalInfo, emergencyContacts: newContacts });
+                             }}
+                             className="flex focus:border-blue-500 w-1/3 bg-slate-950 border border-white/10 rounded-xl px-4 py-3 text-sm font-bold outline-none cursor-text"
+                          />
+                          <div className="flex-1 flex flex-col gap-1 w-full sm:w-1/2">
+                            <input
+                               type="text"
+                               placeholder="Phone Number"
+                               value={contact.number}
+                               onChange={(e) => {
+                                 const newContacts = [...medicalInfo.emergencyContacts];
+                                 newContacts[idx].number = e.target.value;
+                                 setMedicalInfo({ ...medicalInfo, emergencyContacts: newContacts });
+                               }}
+                               className={`bg-slate-950 border ${contact.number && !/^\\+?[\\d\\s()-]{7,20}$/.test(contact.number) ? 'border-red-500' : 'border-white/10'} rounded-xl px-4 py-3 text-sm font-bold focus:border-blue-500 outline-none w-full cursor-text`}
+                            />
+                            {contact.number && !/^\\+?[\\d\\s()-]{7,20}$/.test(contact.number) && (
+                              <span className="text-[10px] text-red-500 font-bold px-2">Invalid phone number format</span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const newContacts = medicalInfo.emergencyContacts.filter((_: any, i: number) => i !== idx);
+                              setMedicalInfo({ ...medicalInfo, emergencyContacts: newContacts });
+                            }}
+                            className="flex items-center justify-center p-3 bg-red-500/10 text-red-400 rounded-xl hover:bg-red-500/20 transition-colors cursor-pointer"
+                          >
+                            <X size={18} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => {
+                        setMedicalInfo({ 
+                          ...medicalInfo, 
+                          emergencyContacts: [...(medicalInfo.emergencyContacts || []), { label: 'Other', number: '' }] 
+                        });
+                      }}
+                      className="text-xs font-bold text-blue-400 hover:text-blue-300 transition-colors flex items-center justify-center border border-dashed border-blue-500/50 rounded-xl w-full py-3 mt-2 bg-blue-500/5"
+                    >
+                      + Add another contact
+                    </button>
                   </div>
                   <div>
                     <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1 block">Known Allergies</label>
@@ -2087,9 +2420,16 @@ If information is received and ambulance is sent press 1`;
                   <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Blood</p>
                   <p className="text-sm font-black text-red-500">{medicalInfo.bloodGroup}</p>
                 </div>
-                <div>
-                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Contact</p>
-                  <p className="text-sm font-black text-white">{medicalInfo.emergencyContact}</p>
+                <div className="w-full">
+                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2">Emergency Contacts</p>
+                  <div className="flex flex-col gap-2">
+                    {(medicalInfo.emergencyContacts || []).map((contact: any, idx: number) => (
+                      <div key={idx} className="flex items-center gap-3">
+                        <span className="text-[8px] font-black px-2 py-1 bg-slate-800 text-slate-300 rounded uppercase tracking-widest">{contact.label || 'Contact'}</span>
+                        <span className="text-sm font-black text-white">{contact.number}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 <div>
                   <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Allergies</p>
@@ -2098,10 +2438,12 @@ If information is received and ambulance is sent press 1`;
               </div>
             )}
           </section>
+          )}
 
 
 
-          <section className="bg-slate-900 border border-slate-800 rounded-3xl p-8 mb-8">
+          {locationPath === '/first-aid' && (
+          <section id="first-aid-section" className="bg-slate-900 border border-slate-800 rounded-3xl p-8 mb-8">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-emerald-500/20 rounded-xl">
@@ -2136,8 +2478,10 @@ If information is received and ambulance is sent press 1`;
               </div>
             )}
           </section>
+          )}
 
-          <section className="bg-slate-900 border border-slate-800 rounded-3xl p-8 mb-8">
+          {locationPath === '/accident-logs' && (
+          <section id="accident-logs-section" className="bg-slate-900 border border-slate-800 rounded-3xl p-8 mb-8">
              <div className="flex items-center justify-between mb-8">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-purple-500/20 rounded-xl">
@@ -2192,7 +2536,10 @@ If information is received and ambulance is sent press 1`;
                )}
              </div>
           </section>
+          )}
 
+          {locationPath === '/' && (
+          <>
           <section className="bg-slate-900 border border-slate-800 rounded-3xl p-8 mb-8">
             <div className="flex items-center gap-3 mb-6">
               <div className="p-2 bg-blue-500/20 rounded-xl">
@@ -2229,6 +2576,45 @@ If information is received and ambulance is sent press 1`;
               Instant access to nearby <b>Trauma Centers</b> and <b>Ambulance Services</b> during road critical incidents.
             </p>
           </section>
+          </>
+          )}
+
+          {locationPath === '/settings' && (
+          <section id="settings-section" className="bg-slate-900 border border-slate-800 rounded-3xl p-8 mb-8 mt-8">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="p-2 bg-slate-700/50 rounded-xl">
+                <Settings className="text-slate-300" size={24} />
+              </div>
+              <h3 className="text-lg font-black uppercase tracking-tight">App Settings</h3>
+            </div>
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between p-4 bg-slate-950/50 border border-slate-800 rounded-2xl">
+                <div>
+                  <h4 className="text-sm font-bold text-white mb-1">Background Monitoring</h4>
+                  <p className="text-[10px] text-slate-400">Keep accelerometer active when app is minimized</p>
+                </div>
+                <div 
+                  onClick={() => setAllowBackgroundMonitoring(!allowBackgroundMonitoring)}
+                  className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${allowBackgroundMonitoring ? 'bg-blue-500' : 'bg-slate-700'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${allowBackgroundMonitoring ? 'right-1' : 'left-1'}`}></div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between p-4 bg-slate-950/50 border border-slate-800 rounded-2xl">
+                <div>
+                  <h4 className="text-sm font-bold text-white mb-1">Voice Feedback</h4>
+                  <p className="text-[10px] text-slate-400">Allow text-to-speech for critical alerts</p>
+                </div>
+                <div 
+                  onClick={() => setAllowVoiceFeedback(!allowVoiceFeedback)}
+                  className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${allowVoiceFeedback ? 'bg-blue-500' : 'bg-slate-700'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${allowVoiceFeedback ? 'right-1' : 'left-1'}`}></div>
+                </div>
+              </div>
+            </div>
+          </section>
+          )}
         </main>
         <InstallAppBanner />
         <EmergencySOSModal 

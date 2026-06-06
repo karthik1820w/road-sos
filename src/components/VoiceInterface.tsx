@@ -266,14 +266,14 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
           {
             name: "Regional Trauma Center",
             type: "HOSPITAL",
-            location: userLocation || { lat: 12.9716, lng: 77.5946 },
+            location: userLocation || { lat: 0, lng: 0 },
             dispatch_number: "+917892375787",
             address: "1 Central Avenue"
           },
           {
             name: "Ambulance Hub Station #4",
             type: "AMBULANCE",
-            location: userLocation ? { lat: userLocation.lat + 0.004, lng: userLocation.lng + 0.004 } : { lat: 12.972, lng: 77.599 },
+            location: userLocation ? { lat: userLocation.lat + 0.004, lng: userLocation.lng + 0.004 } : { lat: 0, lng: 0 },
             dispatch_number: "+917892375787",
             address: "Highway trauma bay"
           }
@@ -315,25 +315,36 @@ If information is received and ambulance is sent press 1`;
       const recipients = ["+916361892311", "+917892375787"];
 
       // Send SMS Broadcast
-      await fetch('/api/emergencies/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipients, message: medicalTxt })
-      });
+      if ((window as any).roadsosExecuteWithOfflineFallback) {
+         await (window as any).roadsosExecuteWithOfflineFallback('/api/emergencies/notify', 'POST', { recipients, message: medicalTxt });
+      } else {
+         await fetch('/api/emergencies/notify', {
+           method: 'POST',
+           headers: { 'Content-Type': 'application/json' },
+           body: JSON.stringify({ recipients, message: medicalTxt })
+         });
+      }
 
       // Initiate Call with BOB Needs Help repeated 3 times and exact location
       const voiceCallMessage = `BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help. The user is located at: ${locationDescription}. Assistance is needed immediately.`;
       
       const numbersToCall = ["+916361892311", "+917892375787"];
       for (const ph of numbersToCall) {
-        await fetch('/api/calls/initiate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        if ((window as any).roadsosExecuteWithOfflineFallback) {
+          await (window as any).roadsosExecuteWithOfflineFallback('/api/calls/initiate', 'POST', {
             to: ph,
             message: voiceCallMessage
-          })
-        });
+          });
+        } else {
+          await fetch('/api/calls/initiate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              to: ph,
+              message: voiceCallMessage
+            })
+          });
+        }
       }
 
     } catch (err) {
@@ -360,14 +371,17 @@ If information is received and ambulance is sent press 1`;
 
       const recipients = ["+916361892311", "+917892375787"];
 
-      const res = await fetch('/api/emergencies/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipients, message: distressMessage })
-      });
-      
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
+      if ((window as any).roadsosExecuteWithOfflineFallback) {
+         await (window as any).roadsosExecuteWithOfflineFallback('/api/emergencies/notify', 'POST', { recipients, message: distressMessage });
+      } else {
+         const res = await fetch('/api/emergencies/notify', {
+           method: 'POST',
+           headers: { 'Content-Type': 'application/json' },
+           body: JSON.stringify({ recipients, message: distressMessage })
+         });
+         const data = await res.json();
+         if (!data.success) throw new Error(data.error);
+      }
 
       let locDesc = "Location data is currently unavailable.";
       if (userLocation) {
@@ -385,14 +399,21 @@ If information is received and ambulance is sent press 1`;
 
       const numbersToCall = ["+916361892311", "+917892375787"];
       for (const ph of numbersToCall) {
-        await fetch('/api/calls/initiate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            to: ph, 
-            message: voiceCallMessage
-          })
-        });
+        if ((window as any).roadsosExecuteWithOfflineFallback) {
+          await (window as any).roadsosExecuteWithOfflineFallback('/api/calls/initiate', 'POST', {
+             to: ph,
+             message: voiceCallMessage
+          });
+        } else {
+          await fetch('/api/calls/initiate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              to: ph, 
+              message: voiceCallMessage
+            })
+          });
+        }
       }
 
       setTimeout(() => {

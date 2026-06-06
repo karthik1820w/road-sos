@@ -4,6 +4,184 @@ import { Bot, Mic, ArrowLeft, Loader2, Volume2 } from 'lucide-react';
 
 import { TrafficUpdate } from '../services/trafficService';
 
+class GeminiError extends Error {
+  code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+const GEMINI_CONFIG = {
+  apiKey: ((import.meta as any).env?.VITE_GEMINI_API_KEY || (window as any).GEMINI_API_KEY || '').trim(),
+  models: [
+    'gemini-1.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-1.5-flash-8b',
+  ],
+  maxRetries: 3,
+  maxOutputTokens: 350,
+  temperature: 0.7,
+};
+
+function buildSystemPrompt() {
+  const td = (window as any)._liveTrafficData;
+
+  const trafficSection = td ? `
+=== LIVE TRAFFIC DATA (fetched ${td.fetchedAt}) ===
+Location   : ${td.location}
+GPS        : ${td.lat?.toFixed(4)}°N, ${td.lng?.toFixed(4)}°E
+Scan radius: ${td.radius || '2.5 km'}
+Congestion : ${td.congestionLevel}
+Traffic present: ${td.trafficPresent ? 'YES' : 'NO — roads are clear'}
+Incidents (${td.incidents?.length || 0} found):
+${td.incidents?.length
+  ? td.incidents.map((i: any) =>
+      `  • ${i.label}${i.distKm ? ' — ' + i.distKm + ' km away' : ''}`
+    ).join('\n')
+  : '  None detected within scan radius'
+}
+Road speeds:
+${td.routes?.length
+  ? td.routes.map((r: any) =>
+      `  • ${r.name}: ${r.speedKmh} km/h avg (${r.congestion})`
+    ).join('\n')
+  : '  No route data available'
+}
+=================================================
+When asked about traffic, roads, or conditions near the user,
+answer using the ABOVE REAL DATA ONLY. Do not guess or make up
+traffic conditions. If data is older than 10 minutes, say so.
+` : `
+=== TRAFFIC DATA ===
+Not yet available. The user has not fetched traffic data yet
+or location permission has not been granted.
+If asked about current traffic, say:
+"Tap 'Get Updates' to load real-time traffic near your location,
+then ask me again — I'll give you accurate local conditions."
+===================
+`;
+
+  return `You are Road SOS Assistant, an intelligent road safety
+and traffic chatbot built into a road safety PWA for Indian roads.
+
+YOU CAN ANSWER:
+- General knowledge questions on any topic
+- Road safety advice and driving tips
+- Real-time traffic conditions (using data below)
+- Emergency road guidance
+- Weather impact on road conditions
+- Navigation and route advice in India
+- Accident prevention and first aid basics
+
+VOICE RESPONSE RULES:
+- Keep answers to 2–3 short sentences MAX (this is a voice interface)
+- No bullet points, no markdown, no asterisks — plain spoken English
+- Indian English is preferred (say "lakh" not "hundred thousand" etc.)
+- Never say you are an AI, a language model, or that you have a brain
+- If you truly cannot answer, say: "I'm not sure about that, but I can
+  help with road safety and traffic questions."
+
+${trafficSection}`;
+}
+
+async function callGemini(userText: string, systemPrompt: string) {
+  let modelIndex = 0;
+
+  for (let attempt = 0; attempt <= GEMINI_CONFIG.maxRetries; attempt++) {
+    const model = GEMINI_CONFIG.models[
+      Math.min(modelIndex, GEMINI_CONFIG.models.length - 1)
+    ];
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/` +
+                `${model}:generateContent?key=${GEMINI_CONFIG.apiKey}`;
+
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ parts: [{ text: userText }] }],
+          generationConfig: {
+            maxOutputTokens: GEMINI_CONFIG.maxOutputTokens,
+            temperature: GEMINI_CONFIG.temperature,
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        const status  = errBody?.error?.status || '';
+        const message = errBody?.error?.message || '';
+
+        if (res.status === 429 || status === 'RESOURCE_EXHAUSTED') {
+          modelIndex++;
+          const wait = Math.min(2000 * Math.pow(2, attempt), 16000);
+          console.warn(`[Gemini] 429 on ${model}. Trying next model in ${wait}ms`);
+          await sleep(wait);
+          continue;
+        }
+
+        if (res.status === 404 || message.includes('not found')) {
+          console.warn(`[Gemini] 404 model retired: ${model}. Switching.`);
+          modelIndex++;
+          continue;
+        }
+
+        if (res.status === 400) {
+          throw new GeminiError('BAD_REQUEST', message);
+        }
+
+        if (res.status === 403) {
+          throw new GeminiError('AUTH_FAILED',
+            'API key invalid or Gemini API not enabled for this project.');
+        }
+
+        if (res.status >= 500) {
+          const wait = Math.min(1500 * Math.pow(2, attempt), 12000);
+          await sleep(wait);
+          continue;
+        }
+
+        throw new GeminiError('UNKNOWN', `HTTP ${res.status}: ${message}`);
+      }
+
+      const data   = await res.json();
+      const text   = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      const finish = data?.candidates?.[0]?.finishReason;
+
+      if (!text) {
+        if (finish === 'SAFETY')    throw new GeminiError('SAFETY', '');
+        if (finish === 'RECITATION') throw new GeminiError('RECITATION', '');
+        throw new GeminiError('EMPTY', 'No response generated.');
+      }
+
+      return text.trim();
+
+    } catch (e: any) {
+      if (e instanceof GeminiError) throw e;
+      if (attempt === GEMINI_CONFIG.maxRetries) throw e;
+      await sleep(1000 * (attempt + 1));
+    }
+  }
+
+  throw new GeminiError('EXHAUSTED', 'All models and retries failed.');
+}
+
+const TRAFFIC_KEYWORDS = [
+  'traffic', 'road', 'jam', 'congestion', 'accident', 'block',
+  'hazard', 'construction', 'police', 'speed', 'route', 'drive',
+  'travel', 'highway', 'near me', 'nearby', 'around here', 'flood'
+];
+
+function isTrafficQuestion(text: string) {
+  const lower = text.toLowerCase();
+  return TRAFFIC_KEYWORDS.some(kw => lower.includes(kw));
+}
+
 interface ChatbotModalProps {
   onClose: () => void;
   userLocation?: { lat: number; lng: number };
@@ -193,6 +371,14 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
 
   const handleQuery = async (text: string) => {
     setState('PROCESSING');
+
+    if (isTrafficQuestion(text) && !(window as any)._liveTrafficData) {
+      console.log("Chatbot: Intercepted traffic question. Fetching data implicitly.");
+      onFetchTrafficUpdates?.();
+      setLastResponse("Let me check the roads near you first — fetching live data...");
+      // removed speak() here to avoid speaking before fetchTrafficUpdates speaks
+      return; 
+    }
     
     const getUpdateMatch = text.match(/(?:get updates|get updates ones|get update|traffic updates?)(?:\s+(?:about|on|in|for|at)\s+(.+))?/i);
     if (getUpdateMatch) {
@@ -201,11 +387,10 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
        onFetchTrafficUpdates?.(locationName);
        const updateResponse = locationName ? `Getting traffic updates for ${locationName}.` : "Getting traffic updates for your current location.";
        setLastResponse(updateResponse);
-       speak(updateResponse);
+       // we removed speak() here so it only speaks once via App.tsx
        return;
     }
 
-    // Store dialogue in local history for context
     const conversationHistory = JSON.parse(localStorage.getItem('chatbot_context') || '[]');
     conversationHistory.push({ role: 'user', text });
     
@@ -214,66 +399,53 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         throw new Error("OFFLINE");
       }
       
-      let trafficContext = undefined;
-      if (trafficData) {
-        trafficContext = `LIVE TRAFFIC DATA:
-Location: ${trafficData.location}
-Congestion: ${trafficData.congestionLevel}
-Incidents: ${trafficData.incidents.length > 0 ? trafficData.incidents.slice(0, 5).map(i => i.name).join(', ') : 'None'}
-Routes: ${trafficData.routes.map(r => `${r.name}: ${r.duration}min, ${r.distance}km`).join('; ')}
-Last Updated: ${trafficData.lastUpdated.toLocaleTimeString()}`;
-      }
+      const historyContext = conversationHistory
+        .slice(-6)
+        .map((t: any) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.text}`)
+        .join('\n');
 
-      const response = await fetch('/api/ai/voice-agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          transcript: text, 
-          location: userLocation, 
-          trafficContext: trafficContext,
-          history: conversationHistory.slice(-5) 
-        })
-      });
+      const fullPrompt = conversationHistory.length > 1
+        ? `${historyContext}` // using history
+        : text;
+
+      const systemPrompt = buildSystemPrompt();
+      const reply        = await callGemini(fullPrompt, systemPrompt);
       
-      if (!response.ok) throw new Error("API_FAIL");
-      
-      const data = await response.json();
-      const answer = data.text || "I'm having trouble connecting to my brain.";
-      
-      conversationHistory.push({ role: 'assistant', text: answer });
+      conversationHistory.push({ role: 'assistant', text: reply });
       localStorage.setItem('chatbot_context', JSON.stringify(conversationHistory.slice(-10)));
       
-      setLastResponse(answer);
-      speak(answer);
-      
-      if (data.toolCall) {
-         const { name, args } = data.toolCall;
-         if (name === 'execute_sos_dispatch') {
-             onTriggerDispatch?.(args.type);
-         } else if (name === 'Maps_to_nearest_hospital') {
-             onMapNearestHospital?.();
-         } else if (name === 'toggle_traffic_layer') {
-             onToggleTraffic?.(args.state);
-         }
-      }
+      setLastResponse(reply);
+      speak(reply);
       
     } catch (err: any) {
-      console.error(err);
+      console.error('[ChatBot Error]', err.code, err.message);
       
-      // OFFLINE FALLBACK
-      let fallbackText = "I experienced an error connecting to my brain. Please try again.";
+      let fallbackText = "Something went wrong on my end. Please try again in a few seconds.";
+
       if (err.message === "OFFLINE" || !navigator.onLine) {
          fallbackText = "It looks like you are offline. I am switching to basic on-device logic. I can still help you dial emergency services locally if you say help.";
          if (text.toLowerCase().includes("help") || text.toLowerCase().includes("emergency")) {
              fallbackText = "Offline mode active. Connecting you to emergency dispatch automatically.";
              onTriggerDispatch?.('offline_distress');
          }
+      } else {
+        const errorMessages: Record<string, string> = {
+          'EXHAUSTED'  : "I'm getting a lot of questions right now. Please wait a moment and ask again.",
+          'AUTH_FAILED': "My AI connection has a setup issue. Please check the API key in settings.",
+          'BAD_REQUEST': "I had trouble understanding that format. Could you rephrase?",
+          'SAFETY'     : "I can't answer that one, but feel free to ask anything about road safety!",
+          'RECITATION' : "Let me rephrase that. Ask me again and I'll try differently.",
+          'EMPTY'      : "I got a blank response. Please ask me again.",
+        };
+
+        if (err.code && errorMessages[err.code]) {
+          fallbackText = errorMessages[err.code];
+        }
       }
       
       setLastResponse(fallbackText);
       speak(fallbackText);
       
-      // Log for observability
       window.dispatchEvent(new CustomEvent('chatbot-error-log', { detail: { error: err.message, query: text } }));
     }
   };

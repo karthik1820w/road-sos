@@ -430,7 +430,7 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
         <Map
         defaultCenter={center}
         defaultZoom={zoom}
-        mapId="ROAD_SOS_MAP"
+        mapId="DEMO_MAP_ID"
         internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
         style={{ width: '100%', height: '100%' }}
         disableDefaultUI={true}

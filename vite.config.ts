@@ -42,9 +42,13 @@ export default defineConfig({
   define: {
     'process.env.GOOGLE_MAPS_PLATFORM_KEY': JSON.stringify(process.env.GOOGLE_MAPS_PLATFORM_KEY),
     'import.meta.env.VITE_GEOAPIFY_API_KEY': JSON.stringify(process.env.VITE_GEOAPIFY_API_KEY),
+    'import.meta.env.VITE_GEMINI_API_KEY': JSON.stringify(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY),
   },
   server: {
     port: 3000,
     host: '0.0.0.0'
+  },
+  build: {
+    chunkSizeWarningLimit: 2000,
   }
 })
