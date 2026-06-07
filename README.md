@@ -34,13 +34,9 @@ GEMINI_API_KEY=your_gemini_api_key
 ```
 
 ### Installation
-1. Install dependencies (Standard):
+1. Install dependencies:
    ```bash
    npm install
-   ```
-   *Alternatively, if you prefer using the requirements.txt:*
-   ```bash
-   npm install $(cat requirements.txt | grep -v '^#')
    ```
 2. Start the development server:
    ```bash
