@@ -71,7 +71,7 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({ onComplete }
         <div className="absolute top-0 left-0 w-full h-1 bg-slate-800">
           <div 
             className="h-full bg-blue-500 transition-all duration-500"
-            style={{ width: `${(step / 3) * 100}%` }}
+            style={{ width: `${(step / 4) * 100}%` }}
           />
         </div>
 
@@ -150,7 +150,7 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({ onComplete }
                   <div>
                     <h3 className="text-white font-bold mb-1">Device Phone Number</h3>
                     <p className="text-slate-400 text-sm">
-                      Web Apps cannot read your SIM number or call logs securely. Enter your real number manually for responder Caller ID.
+                      Web Apps cannot read your SIM number or call logs securely. Enter your real number manually.
                     </p>
                   </div>
                 </div>
@@ -163,11 +163,64 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({ onComplete }
                 />
               </div>
               <button 
-                onClick={finishSetup}
+                onClick={() => setStep(4)}
                 disabled={phone.length < 10}
                 className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold py-3 rounded-xl transition duration-200 flex items-center justify-center gap-2"
               >
-                <CheckCircle2 size={18} /> Complete Setup
+                Next <ChevronRight size={18} />
+              </button>
+            </motion.div>
+          )}
+
+          {step === 4 && (
+            <motion.div 
+              key="step4"
+              initial={{ x: 20, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: -20, opacity: 0 }}
+            >
+              <div className="bg-slate-800/50 p-4 rounded-xl mb-6 border border-white/5">
+                <div className="flex items-start gap-4">
+                  <Phone className="text-amber-400 shrink-0 mt-1" />
+                  <div>
+                    <h3 className="text-white font-bold mb-1">Emergency Contacts</h3>
+                    <p className="text-slate-400 text-sm">Please allow access to your contacts so we can alert them when you are in danger.</p>
+                  </div>
+                </div>
+              </div>
+              <button 
+                onClick={async () => {
+                  if ('contacts' in navigator && (window as any).ContactsManager) {
+                     try {
+                        const props = ['name', 'tel'];
+                        const opts = { multiple: true };
+                        const contacts = await (navigator as any).contacts.select(props, opts);
+                        if (contacts && contacts.length > 0) {
+                          const newContacts = contacts.flatMap((c: any) => 
+                            (c.tel || []).map((t: string) => ({ label: (c.name && c.name.length > 0) ? c.name[0] : 'Imported', number: t }))
+                          );
+                          const existingInfoStr = localStorage.getItem('roadSosMedicalInfo');
+                          const info = existingInfoStr ? JSON.parse(existingInfoStr) : { emergencyContacts: [] };
+                          info.emergencyContacts = [...(info.emergencyContacts || []), ...newContacts];
+                          localStorage.setItem('roadSosMedicalInfo', JSON.stringify(info));
+                        }
+                     } catch(e) {
+                        console.warn(e);
+                     }
+                  } else {
+                     alert("Contacts API is not supported on this device. You can add them manually later.");
+                  }
+                  finishSetup();
+                }}
+                className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3 rounded-xl transition duration-200 mb-2 flex justify-center"
+              >
+                Allow Contacts Access
+              </button>
+              <button 
+                onClick={finishSetup}
+                className="w-full text-slate-400 hover:text-white font-bold py-3 rounded-xl transition duration-200"
+              >
+                Skip for now
               </button>
             </motion.div>
           )}

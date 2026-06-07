@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { createClient } from "@supabase/supabase-js";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
@@ -596,7 +595,7 @@ app.post("/api/twilio/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
   
   if (isDrivingModeActive) {
-    twiml.say("The person you are calling is currently driving and has Road SOS protection active. They will be notified of your call when they reach their destination safely.");
+    twiml.say("User is currently driving will speak to you later.");
     twiml.hangup();
   } else {
     twiml.say("Connecting you to the Road SOS user.");
@@ -1226,6 +1225,7 @@ app.post("/api/places/search", async (req, res) => {
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
