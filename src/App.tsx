@@ -170,6 +170,25 @@ export default function App() {
     setIsDrivingMode(newState);
     try {
       await executeWithOfflineFallback('/api/status/driving', 'POST', { active: newState });
+      
+      try {
+        const res = await fetch('/api/config/twilio');
+        const data = await res.json();
+        const twilioNum = data.phoneNumber || "YOUR_TWILIO_NUMBER";
+        
+        if (newState) {
+          if (window.confirm("Driving Mode Enabled!\n\nTo automatically answer incoming calls from your OWN phone number with the 'Driving' message, you must enable Call Forwarding to the system number (" + twilioNum + ").\n\nClick OK to open your dialer and activate Call Forwarding.")) {
+             window.location.href = `tel:**21*${twilioNum.replace('+', '')}%23`;
+          }
+        } else {
+          if (window.confirm("Driving Mode Disabled!\n\nTo receive calls on your phone again, you must disable Call Forwarding.\n\nClick OK to open dialer and disable it.")) {
+             window.location.href = `tel:%23%2321%23`;
+          }
+        }
+      } catch (err) {
+        console.error("Could not fetch twilio config for call forwarding", err);
+      }
+      
     } catch (e) {
       console.error("Failed to sync driving status:", e);
     }
@@ -578,6 +597,11 @@ IMMEDIATE ASSISTANCE REQUIRED.`;
       await Promise.all(targetNumbers.map(target => 
         executeWithOfflineFallback('/api/sos/call-neon', 'POST', { to: target, patientName: mInfo.name || 'BOB' })
       ));
+
+      // Dial from the user's phone directly
+      if (targetNumbers.length > 0) {
+        window.location.href = `tel:${targetNumbers[0].replace('+', '')}`;
+      }
       
       console.log("[Neon Distress] SMS and Calls sent successfully.");
     } catch (err) {
@@ -673,6 +697,11 @@ If information is received and ambulance is sent press 1`;
             host: window.location.origin
         })
       ));
+
+      // Dial from the user's phone directly
+      if (targetNumbers.length > 0) {
+        window.location.href = `tel:${targetNumbers[0].replace('+', '')}`;
+      }
 
       // Send PDF Report to targets via messenger
       await Promise.all(targetNumbers.map(targetNumber => 
@@ -2396,8 +2425,34 @@ If information is received and ambulance is sent press 1`;
                       }}
                       className="text-xs font-bold text-blue-400 hover:text-blue-300 transition-colors flex items-center justify-center border border-dashed border-blue-500/50 rounded-xl w-full py-3 mt-2 bg-blue-500/5"
                     >
-                      + Add another contact
+                      + Add another contact manually
                     </button>
+                    {'contacts' in navigator && (window as any).ContactsManager && (
+                      <button
+                        onClick={async () => {
+                          try {
+                            const props = ['name', 'tel'];
+                            const opts = { multiple: true };
+                            const contacts = await (navigator as any).contacts.select(props, opts);
+                            if (contacts && contacts.length > 0) {
+                              const newContacts = contacts.flatMap((c: any) => 
+                                (c.tel || []).map((t: string) => ({ label: (c.name && c.name.length > 0) ? c.name[0] : 'Imported', number: t }))
+                              );
+                              setMedicalInfo({
+                                ...medicalInfo,
+                                emergencyContacts: [...(medicalInfo.emergencyContacts || []), ...newContacts]
+                              });
+                            }
+                          } catch (ex) {
+                            console.error('Contact selection failed:', ex);
+                            alert("Could not access contacts. Permission denied or unsupported.");
+                          }
+                        }}
+                        className="text-xs font-bold text-green-400 hover:text-green-300 transition-colors flex items-center justify-center border border-dashed border-green-500/50 rounded-xl w-full py-3 mt-2 bg-green-500/5"
+                      >
+                        + Import from Phone Contacts
+                      </button>
+                    )}
                   </div>
                   <div>
                     <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1 block">Known Allergies</label>

@@ -691,6 +691,10 @@ const getTwilio = () => {
   return twilioClient;
 };
 
+app.get("/api/config/twilio", (req, res) => {
+  res.json({ phoneNumber: process.env.TWILIO_FROM_NUMBER || "+1234567890" });
+});
+
 // API: Twilio Diagnostics
 app.get("/api/diagnostics/twilio", (req, res) => {
   const sid = process.env.TWILIO_ACCOUNT_SID;
