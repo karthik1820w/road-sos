@@ -1225,7 +1225,8 @@ app.post("/api/places/search", async (req, res) => {
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
+    const viteMod = "vi" + "te";
+    const { createServer: createViteServer } = await import(/* @vite-ignore */ viteMod);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

@@ -1295,6 +1295,25 @@ If information is received and ambulance is sent press 1`;
              }
              if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            }
+
+           if (cleanCombined.includes('shutdown the application') || cleanCombined.includes('shut down the application') || cleanCombined.includes('close the application') || cleanCombined.includes('close the app') || cleanCombined.includes('shutdown the app') || cleanCombined.includes('shut down the app')) {
+             speakNotification("Shutting down the application.");
+             setTimeout(() => {
+                 setIsMonitoring(false);
+                 if ((window as any)._heldAudioStream) {
+                     (window as any)._heldAudioStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+                     (window as any)._heldAudioStream = null;
+                 }
+                 try {
+                     window.close();
+                 } catch(e) {}
+                 if ("app" in navigator && (navigator as any).app && (navigator as any).app.exitApp) {
+                     (navigator as any).app.exitApp();
+                 }
+                 window.location.href = "about:blank";
+             }, 1500);
+             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+           }
            
            if (cleanCombined.includes("open voice assistant") || cleanCombined.includes("open chatbot") || cleanCombined.includes("start voice assistant")) {
              setIsVoiceActive(true);
@@ -1595,6 +1614,12 @@ If information is received and ambulance is sent press 1`;
        const utterance = new SpeechSynthesisUtterance("Road S O S is active.");
        utterance.rate = 1.0;
        window.speechSynthesis.speak(utterance);
+       
+       // Acquire and hold mic track to prevent SpeechRecognition beeps on Android
+       // and keep the mic pipeline warm as a mobile feature.
+       navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+           (window as any)._heldAudioStream = stream; // Keep a strong reference
+       }).catch(err => console.log("Failed to hold mic stream:", err));
     }
   }, [setupComplete]);
 
