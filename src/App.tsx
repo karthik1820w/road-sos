@@ -44,6 +44,7 @@ export default function App() {
   const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [isSosModalOpen, setIsSosModalOpen] = useState(false);
   const [isChatbotModalOpen, setIsChatbotModalOpen] = useState(false);
+  const [chatbotGreeting, setChatbotGreeting] = useState<string>("How can I help?");
   const [isNavMenuOpen, setIsNavMenuOpen] = useState(false);
   const [allowBackgroundMonitoring, setAllowBackgroundMonitoring] = useState(true);
   const [allowVoiceFeedback, setAllowVoiceFeedback] = useState(true);
@@ -62,6 +63,8 @@ export default function App() {
 
   const [dispatchData, setDispatchData] = useState<any>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const userLocationRef = useRef(userLocation);
+  useEffect(() => { userLocationRef.current = userLocation; }, [userLocation]);
   const [telemetry, setTelemetry] = useState({ x: 0, y: 0, z: 9.8 });
   const [peakG, setPeakG] = useState(1.0);
   const [systemHealth, setSystemHealth] = useState({ micActive: false, network: navigator.onLine });
@@ -98,7 +101,17 @@ export default function App() {
   }, [offlineQueue]);
 
   useEffect(() => {
-    const handleMicState = (e: any) => setSystemHealth(s => ({ ...s, micActive: e.detail }));
+    let micTimeout: NodeJS.Timeout;
+    const handleMicState = (e: any) => {
+      clearTimeout(micTimeout);
+      if (e.detail) {
+        setSystemHealth(s => ({ ...s, micActive: true }));
+      } else {
+        micTimeout = setTimeout(() => {
+          setSystemHealth(s => ({ ...s, micActive: false }));
+        }, 1000);
+      }
+    };
     const handleOnline = () => {
        setSystemHealth(s => ({ ...s, network: true }));
        const queue = offlineQueueRef.current;
@@ -159,15 +172,102 @@ export default function App() {
   });
   const logsRef = useRef(logs);
   useEffect(() => { logsRef.current = logs; }, [logs]);
+  const [currentTripStart, setCurrentTripStart] = useState<any>(() => {
+    const saved = localStorage.getItem('roadsos_current_trip');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const currentTripStartRef = useRef(currentTripStart);
+  useEffect(() => {
+    currentTripStartRef.current = currentTripStart;
+    if (currentTripStart) {
+      localStorage.setItem('roadsos_current_trip', JSON.stringify(currentTripStart));
+    } else {
+      localStorage.removeItem('roadsos_current_trip');
+    }
+  }, [currentTripStart]);
+
+  const [trips, setTrips] = useState<any[]>(() => {
+    const saved = localStorage.getItem('roadsos_trips_log');
+    return saved ? JSON.parse(saved) : [];
+  });
+  useEffect(() => {
+    localStorage.setItem('roadsos_trips_log', JSON.stringify(trips));
+  }, [trips]);
+
   const [isMonitoring, setIsMonitoring] = useState(true);
   const [motionPermission, setMotionPermission] = useState<'granted' | 'denied' | 'prompt' | 'unsupported'>('prompt');
   
   // New States
   const [safetyWord] = useState('NEON');
   const [isDrivingMode, setIsDrivingMode] = useState(false);
+  const isDrivingModeRef = useRef(isDrivingMode);
+  useEffect(() => {
+    isDrivingModeRef.current = isDrivingMode;
+  }, [isDrivingMode]);
+
   const toggleDrivingMode = async () => {
-    const newState = !isDrivingMode;
+    const newState = !isDrivingModeRef.current;
     setIsDrivingMode(newState);
+    
+    const loc = userLocationRef.current;
+    
+    // Trip Logging
+    if (newState) {
+       // Starting driving mode
+       let startAddress = loc ? `Lat: ${loc.lat.toFixed(4)}, Lng: ${loc.lng.toFixed(4)}` : 'Unknown Location';
+       if (loc) {
+         try {
+           startAddress = await geoapifyService.reverseGeocode(loc.lat, loc.lng);
+         } catch(e) {}
+       }
+       setCurrentTripStart({
+          time: Date.now(),
+          location: loc,
+          address: startAddress
+       });
+    } else {
+       // Stopping driving mode
+       let endAddress = loc ? `Lat: ${loc.lat.toFixed(4)}, Lng: ${loc.lng.toFixed(4)}` : 'Unknown Location';
+       if (loc) {
+         try {
+           endAddress = await geoapifyService.reverseGeocode(loc.lat, loc.lng);
+         } catch(e) {}
+       }
+       
+       const curTrip = currentTripStartRef.current;
+       if (curTrip) {
+          const durationMs = Date.now() - curTrip.time;
+          const mins = Math.floor(durationMs / 60000);
+          
+          let distanceStr = 'Tracking...';
+          if (curTrip.location && loc) {
+             // Approximation of distance in km using Haversine
+             const R = 6371; // Radius of the earth in km
+             const dLat = (loc.lat - curTrip.location.lat) * Math.PI / 180;
+             const dLon = (loc.lng - curTrip.location.lng) * Math.PI / 180;
+             const a = 
+               Math.sin(dLat/2) * Math.sin(dLat/2) +
+               Math.cos(curTrip.location.lat * Math.PI / 180) * Math.cos(loc.lat * Math.PI / 180) * 
+               Math.sin(dLon/2) * Math.sin(dLon/2);
+             const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+             const d = R * c; // Distance in km
+             distanceStr = `${d.toFixed(1)} km`;
+          }
+
+          const newTrip = {
+             id: Date.now().toString(),
+             date: new Date().toLocaleDateString(),
+             type: 'safe',
+             start: curTrip.address,
+             end: endAddress,
+             duration: `${mins} min`,
+             distance: distanceStr
+          };
+          setTrips(prev => [newTrip, ...prev]);
+          setCurrentTripStart(null);
+       }
+    }
+
     try {
       await executeWithOfflineFallback('/api/status/driving', 'POST', { active: newState });
       
@@ -177,13 +277,9 @@ export default function App() {
         const twilioNum = data.phoneNumber || "YOUR_TWILIO_NUMBER";
         
         if (newState) {
-          if (window.confirm("Driving Mode Enabled!\n\nTo automatically answer incoming calls from your OWN phone number with the 'Driving' message, you must enable Call Forwarding to the system number (" + twilioNum + ").\n\nClick OK to open your dialer and activate Call Forwarding.")) {
-             window.location.href = `tel:**21*${twilioNum.replace('+', '')}%23`;
-          }
+           speakNotification("Driving Mode Engaged. Safe travels.");
         } else {
-          if (window.confirm("Driving Mode Disabled!\n\nTo receive calls on your phone again, you must disable Call Forwarding.\n\nClick OK to open dialer and disable it.")) {
-             window.location.href = `tel:%23%2321%23`;
-          }
+           speakNotification("Driving Mode Disabled.");
         }
       } catch (err) {
         console.error("Could not fetch twilio config for call forwarding", err);
@@ -402,14 +498,31 @@ export default function App() {
     } catch(e) {}
   };
 
-  const fetchTrafficUpdates = async (locationName?: string) => {
-    if (!userLocation && !locationName) return;
+  const fetchTrafficUpdates = async (locationName?: string, forceFetch: boolean = false) => {
+    let loc = userLocationRef.current;
+    if (!loc && !locationName) {
+         try {
+             const getLiveGPS = () => new Promise<{lat: number, lng: number}>((resolve, reject) => {
+                 navigator.geolocation.getCurrentPosition(
+                     pos => resolve({lat: pos.coords.latitude, lng: pos.coords.longitude}),
+                     err => reject(err),
+                     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                 );
+             });
+             const livePos = await getLiveGPS();
+             setUserLocation(livePos);
+             loc = livePos;
+         } catch(e) {
+             console.warn("Could not get user location:", e);
+             return;
+         }
+    }
 
     const now = Date.now();
     let isDebounced = false;
     
-    // Always bypass debounce if a specific location is requested
-    if (locationName) {
+    // Always bypass debounce if a specific location is requested or explicitly forced
+    if (locationName || forceFetch) {
        lastTrafficFetchTimeRef.current = now;
     } else if (now - lastTrafficFetchTimeRef.current < 30000) {
       isDebounced = true;
@@ -420,8 +533,25 @@ export default function App() {
     setFetchingTraffic(true);
     setShowTrafficMap(true);
     try {
-      let lat = userLocation?.lat;
-      let lng = userLocation?.lng;
+      let lat = loc?.lat;
+      let lng = loc?.lng;
+
+      if (!lat || !lng) {
+          // One more attempt if it wasn't set yet
+          try {
+             const getLiveGPS = () => new Promise<{lat: number, lng: number}>((resolve, reject) => {
+                 navigator.geolocation.getCurrentPosition(
+                     pos => resolve({lat: pos.coords.latitude, lng: pos.coords.longitude}),
+                     err => reject(err),
+                     { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+                 );
+             });
+             const livePos = await getLiveGPS();
+             lat = livePos.lat;
+             lng = livePos.lng;
+             setUserLocation(livePos);
+          } catch(e) {}
+      }
 
       if (locationName) {
          try {
@@ -1280,15 +1410,15 @@ If information is received and ambulance is sent press 1`;
            }
 
            // Voice Controls for Features (Alexa style)
-           if (cleanCombined.includes("turn on driving mode") || cleanCombined.includes("start driving mode") || cleanCombined.includes("enable driving mode")) {
-             if (!isDrivingMode) {
+           if (cleanCombined.includes("turn on driving mode") || cleanCombined.includes("start driving mode") || cleanCombined.includes("enable driving mode") || cleanCombined.includes("drive mode on") || cleanCombined.includes("turn on drive mode") || cleanCombined.includes("turn driving mode on") || cleanCombined.includes("driving mode on")) {
+             if (!isDrivingModeRef.current) {
                toggleDrivingMode(); // will speak 'Driving mode engaged'
              } else {
                speakNotification("Driving mode is already on.");
              }
              if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
-           } else if (cleanCombined.includes("turn off driving mode") || cleanCombined.includes("stop driving mode") || cleanCombined.includes("disable driving mode")) {
-             if (isDrivingMode) {
+           } else if (cleanCombined.includes("turn off driving mode") || cleanCombined.includes("stop driving mode") || cleanCombined.includes("disable driving mode") || cleanCombined.includes("drive mode off") || cleanCombined.includes("driving mode off") || cleanCombined.includes("turn drive mode off") || cleanCombined.includes("turn off drive mode")) {
+             if (isDrivingModeRef.current) {
                toggleDrivingMode();
              } else {
                speakNotification("Driving mode is already off.");
@@ -1348,7 +1478,7 @@ If information is received and ambulance is sent press 1`;
               { keywords: ['settings', 'preferences'], path: '/settings' }
             ];
             for (const route of routeMatches) {
-                if (route.keywords.some(kw => cleanCombined.includes(`open ${kw}`) || cleanCombined.includes(`show ${kw}`) || cleanCombined.includes(`go to ${kw}`))) {
+                if (route.keywords.some(kw => cleanCombined === kw || cleanCombined.includes(`open ${kw}`) || cleanCombined.includes(`show ${kw}`) || cleanCombined.includes(`go to ${kw}`) || cleanCombined.includes(kw))) {
                     navigate(route.path);
                     speakNotification(`Opening ${route.keywords[0]}...`);
                     if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
@@ -1377,9 +1507,11 @@ If information is received and ambulance is sent press 1`;
            }
 
            // App UI Commands
-           if (cleanCombined === "hello" || cleanCombined.includes("hello")) {
+           if (cleanCombined === "hello" || cleanCombined.includes("hello") || cleanCombined === "hi" || cleanCombined === "heilo" || cleanCombined.includes("hi ") || cleanCombined.includes("hey ")) {
                console.log("Voice Command: Hello");
-               speakNotification("HEILO bob how are you doing!");
+               setChatbotGreeting("HEILO bob how are you doing!");
+               setIsChatbotModalOpen(true);
+               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            }
 
            if (cleanCombined === "refresh" || cleanCombined.includes("refresh the app") || cleanCombined.includes("refresh page")) {
@@ -1394,7 +1526,7 @@ If information is received and ambulance is sent press 1`;
            if (getUpdateMatch) {
                console.log("Voice Command: Get Updates");
                const locationName = getUpdateMatch[1];
-               fetchTrafficUpdates(locationName);
+               fetchTrafficUpdates(locationName, true);
                const uiEl = document.getElementById("traffic-updates-section");
                if (uiEl) uiEl.scrollIntoView({ behavior: 'smooth' });
                rollingTranscriptsRef.current = [];
@@ -1516,6 +1648,13 @@ If information is received and ambulance is sent press 1`;
   }, [allowBackgroundMonitoring, motionPermission]);
 
   useEffect(() => {
+    // Fast initial fix (low accuracy)
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      (err) => console.warn("[GPS] Initial fix failed:", err),
+      { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
+    );
+
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
@@ -1790,8 +1929,9 @@ If information is received and ambulance is sent press 1`;
             <ChatbotModal 
               key="chatbot-modal"
               onClose={() => setIsChatbotModalOpen(false)}
-              userLocation={userLocation}
+              userLocation={userLocation || undefined}
               trafficData={trafficUpdate}
+              initialGreeting={chatbotGreeting}
               onFetchTrafficUpdates={(locName) => {
                  fetchTrafficUpdates(locName);
                  const uiEl = document.getElementById("traffic-updates-section");
@@ -2172,8 +2312,9 @@ If information is received and ambulance is sent press 1`;
                 <p className="text-[10px] text-slate-500 max-w-[200px] mt-1">Get real-time accident and road reports near your location via OpenStreetMap.</p>
               </div>
               <button 
-                onClick={() => fetchTrafficUpdates()}
-                disabled={fetchingTraffic || !userLocation}
+                id="get-updates-btn"
+                onClick={() => fetchTrafficUpdates(undefined, true)}
+                disabled={fetchingTraffic || (!userLocation && !fetchingTraffic)}
                 className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-4 py-2 rounded-2xl text-xs font-black uppercase tracking-widest transition-all w-full sm:w-auto"
               >
                 {fetchingTraffic ? 'Fetching...' : 'Get Updates'}
@@ -2211,7 +2352,7 @@ If information is received and ambulance is sent press 1`;
           </section>
           )}
 
-          {locationPath === '/trip-history' && <TripHistory />}
+          {locationPath === '/trip-history' && <TripHistory trips={trips} currentTripStart={currentTripStart} userLocation={userLocation} />}
 
           {locationPath === '/accelerometer' && (
           <section id="accelerometer-section" className="mb-12">

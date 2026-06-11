@@ -64,8 +64,8 @@ then ask me again — I'll give you accurate local conditions."
 ===================
 `;
 
-  return `You are Road SOS Assistant, an intelligent road safety
-and traffic chatbot built into a road safety PWA for Indian roads.
+  return `You are Road SOS Assistant, an intelligent road safety, traffic, and personal travel assistant for Bob.
+When Bob replies to your initial greeting (like "I am good"), you should casually ask him: "Where do you want to go today?" or "What's your plan for today?" to start helping him travel.
 
 YOU CAN ANSWER:
 - General knowledge questions on any topic
@@ -77,10 +77,10 @@ YOU CAN ANSWER:
 - Accident prevention and first aid basics
 
 VOICE RESPONSE RULES:
-- Keep answers to 2–3 short sentences MAX (this is a voice interface)
+- Keep answers to 1–2 short conversational sentences MAX.
 - No bullet points, no markdown, no asterisks — plain spoken English
-- Indian English is preferred (say "lakh" not "hundred thousand" etc.)
 - Never say you are an AI, a language model, or that you have a brain
+- Use a friendly, natural tone. Address the user as Bob casually if appropriate.
 - If you truly cannot answer, say: "I'm not sure about that, but I can
   help with road safety and traffic questions."
 
@@ -190,6 +190,7 @@ interface ChatbotModalProps {
   onMapNearestHospital?: () => void;
   onToggleTraffic?: (state: boolean) => void;
   onFetchTrafficUpdates?: (locationName?: string) => void;
+  initialGreeting?: string;
 }
 
 export const ChatbotModal: React.FC<ChatbotModalProps> = ({ 
@@ -199,7 +200,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
   onTriggerDispatch,
   onMapNearestHospital,
   onToggleTraffic,
-  onFetchTrafficUpdates
+  onFetchTrafficUpdates,
+  initialGreeting = "How can I help?"
 }) => {
   const stateRef = useRef<'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'ERROR'>('IDLE');
   const [state, _setState] = useState<'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'ERROR'>('IDLE');
@@ -293,7 +295,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       };
 
       recognitionRef.current.onerror = (event: any) => {
-        if (event.error !== 'aborted' && event.error !== 'no-speech') {
+        if (event.error !== 'aborted' && event.error !== 'no-speech' && event.error !== 'network') {
           console.error("Chatbot Voice Error:", event.error);
           setState('ERROR');
           if (event.error === 'not-allowed') {
@@ -301,6 +303,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
           } else {
             setVoiceError(`Voice Error: ${event.error}`);
           }
+        } else if (event.error === 'network') {
+          console.warn("Chatbot Voice Network Error - retrying automatically.");
         }
       };
 
@@ -318,7 +322,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
 
     // Auto-start speaking on mount, which will trigger listening on end
     const timer = setTimeout(() => {
-      speak("How can I help?");
+      speak(initialGreeting);
     }, 500);
 
     // prevent memory overflow by periodically restarting

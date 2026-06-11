@@ -2,10 +2,8 @@ import React, { useState } from 'react';
 import { Map, Clock, Navigation, MapPin } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-export default function TripHistory() {
+export default function TripHistory({ trips = [], currentTripStart = null, userLocation = null }: { trips?: any[], currentTripStart?: any, userLocation?: any }) {
   const [isOpen, setIsOpen] = useState(false);
-
-  const manualTrips: any[] = [];
 
   return (
     <section id="trip-history-section" className="mb-8 w-full max-w-full">
@@ -37,8 +35,32 @@ export default function TripHistory() {
               className="px-6 pb-6 overflow-hidden"
             >
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-2">
-                {manualTrips.length > 0 ? manualTrips.map(trip => (
-                  <div key={trip.id} className="p-4 bg-slate-950/50 border border-slate-800 rounded-2xl flex flex-col gap-3 transition-transform hover:-translate-y-1">
+                {currentTripStart && (
+                  <div className="p-4 bg-indigo-950/50 border border-indigo-500/50 rounded-2xl flex flex-col gap-3 transition-transform hover:-translate-y-1 relative overflow-hidden text-left">
+                    <div className="absolute top-0 right-0 p-2 opacity-20 pointer-events-none">
+                      <Navigation size={48} className="animate-pulse" />
+                    </div>
+                    <div className="flex items-center justify-between relative z-10">
+                      <span className="text-[11px] font-mono text-slate-300 uppercase tracking-widest font-black">Today (Live)</span>
+                      <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-blue-500/20 text-blue-400 animate-pulse">
+                        In Progress
+                      </span>
+                    </div>
+                    
+                    <div className="flex flex-col gap-2 relative z-10 text-left">
+                      <div className="flex items-center gap-2">
+                        <MapPin size={14} className="text-indigo-400 shrink-0" />
+                        <span className="text-sm font-bold text-white truncate">{currentTripStart.address || 'Unknown Location'}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Navigation size={14} className="text-blue-400 rotate-90 shrink-0" />
+                        <span className="text-sm font-bold text-blue-200 truncate animate-pulse tracking-widest">Driving...</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {(trips.length > 0 || currentTripStart) ? trips.map(trip => (
+                  <div key={trip.id} className="p-4 bg-slate-950/50 border border-slate-800 rounded-2xl flex flex-col gap-3 transition-transform hover:-translate-y-1 text-left">
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] font-mono text-slate-400">{trip.date}</span>
                       <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full ${trip.type === 'safe' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500'}`}>
