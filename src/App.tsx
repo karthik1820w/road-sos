@@ -17,7 +17,7 @@ import { TrafficUpdate, fetchLiveTrafficData } from './services/trafficService';
 import { TrafficUpdatesUI } from './components/TrafficUpdatesUI';
 
 
-const GOOGLE_MAPS_API_KEY =
+const INITIAL_GOOGLE_MAPS_KEY =
   process.env.GOOGLE_MAPS_PLATFORM_KEY ||
   (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY ||
   (globalThis as any).GOOGLE_MAPS_PLATFORM_KEY ||
@@ -39,8 +39,36 @@ export default function App() {
   const locationPath = useLocation().pathname;
   
   const [setupComplete, setSetupComplete] = useState(false);
+  const [mapsApiKey, setMapsApiKey] = useState(() => localStorage.getItem('roadsos_maps_key') || INITIAL_GOOGLE_MAPS_KEY);
+  const [hasCheckedKey, setHasCheckedKey] = useState(mapsApiKey !== '');
+  
+  useEffect(() => {
+    if (!hasCheckedKey) {
+      fetch('/api/config/maps')
+        .then(r => r.json())
+        .then(d => {
+            const key = d.apiKey || 'MISSING_DEV_KEY';
+            setMapsApiKey(key);
+            setHasCheckedKey(true);
+            if (d.apiKey) localStorage.setItem('roadsos_maps_key', d.apiKey);
+        })
+        .catch(err => {
+            console.error(err);
+            setMapsApiKey(localStorage.getItem('roadsos_maps_key') || 'MISSING_DEV_KEY');
+            setHasCheckedKey(true);
+        });
+    }
+  }, [hasCheckedKey]);
   const [userPhone, setUserPhone] = useState("");
+  const userPhoneRef = useRef(userPhone);
+  useEffect(() => {
+    userPhoneRef.current = userPhone;
+  }, [userPhone]);
   const [isEmergency, setIsEmergency] = useState(false);
+  const isEmergencyRef = useRef(isEmergency);
+  useEffect(() => {
+    isEmergencyRef.current = isEmergency;
+  }, [isEmergency]);
   const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [isSosModalOpen, setIsSosModalOpen] = useState(false);
   const [isChatbotModalOpen, setIsChatbotModalOpen] = useState(false);
@@ -713,8 +741,9 @@ export default function App() {
     }
 
     const mInfo = medicalInfoRef.current;
+    const phone = userPhoneRef.current || 'Unknown User';
 
-    const smsMessage = `SECRET DISTRESS ALERT: BOB is in danger.
+    const smsMessage = `SECRET DISTRESS ALERT: User ${phone} is in danger.
 Location: ${loc ? `${addressStr} (https://www.google.com/maps?q=${loc.lat},${loc.lng})` : 'Unknown Location'}
 Time: ${new Date().toLocaleTimeString()}
 Recent Trip History: No Recent Trip History Available
@@ -732,7 +761,7 @@ IMMEDIATE ASSISTANCE REQUIRED.`;
 
       // 2. Initiate Call concurrently for all targets
       await Promise.all(targetNumbers.map(target => 
-        executeWithOfflineFallback('/api/sos/call-neon', 'POST', { to: target, patientName: mInfo.name || 'BOB' })
+        executeWithOfflineFallback('/api/sos/call-neon', 'POST', { to: target, patientName: mInfo.name || phone })
       ));
 
       // Dial from the user's phone directly
@@ -793,12 +822,13 @@ IMMEDIATE ASSISTANCE REQUIRED.`;
     }
 
     const isHelpCommand = reason.includes("HELP spoken 3 times");
-    const distressCallMessage = isHelpCommand ? "BOB needs help. BOB needs help." : "BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help.";
+    const pName = mInfo.name || userPhoneRef.current || 'the user';
+    const distressCallMessage = isHelpCommand ? `${pName} needs help. ${pName} needs help.` : `${pName} IN Danger!! ${pName} Needs help. ${pName} IN Danger!! ${pName} Needs help.`;
     
     const smsMessage = `DISTRESS ALERT: ${distressCallMessage}
 Location: ${loc ? `${addressStr} (https://www.google.com/maps?q=${loc.lat},${loc.lng})` : 'Unknown Location'}
 Time: ${new Date().toLocaleTimeString()}
-Patient: ${mInfo.name}
+Patient: ${mInfo.name || 'Unknown'}
 Blood Group: ${mInfo.bloodGroup}
 IMMEDIATE ASSISTANCE REQUIRED.
 If information is received and ambulance is sent press 1`;
@@ -806,8 +836,8 @@ If information is received and ambulance is sent press 1`;
     try {
       if (!silent || isHelpCommand) {
         if (isHelpCommand && 'speechSynthesis' in window) {
-           speakNotification("BOB needs help.");
-           setTimeout(() => speakNotification("BOB needs help."), 2000);
+           speakNotification(`${pName} needs help.`);
+           setTimeout(() => speakNotification(`${pName} needs help.`), 2000);
         } else if (!silent) {
            speakNotification("Initiating emergency broadcast protocols.");
         }
@@ -1179,8 +1209,9 @@ If information is received and ambulance is sent press 1`;
       ? `https://www.google.com/maps?q=${userLocation.lat},${userLocation.lng}`
       : "Unknown Location";
       
-    const smsMessage = `the user BOB is in danger and help is needed. Live Location: ${addressStr} (${liveLocationLink})`;
-    const callMessage = "Emergency Alert. the user BOB is in danger and help is needed.";
+    const pName = medicalInfoRef.current.name || userPhoneRef.current || 'the user';
+    const smsMessage = `${pName} is in danger and help is needed. Live Location: ${addressStr} (${liveLocationLink})`;
+    const callMessage = `Emergency Alert. ${pName} is in danger and help is needed.`;
 
     try {
       // 1. Send SMS to targets
@@ -1724,6 +1755,8 @@ If information is received and ambulance is sent press 1`;
   useEffect(() => {
     if (!isMonitoring) return;
 
+    let lastStateUpdate = 0;
+
     // Accelerometer
     const handleMotion = (e: DeviceMotionEvent) => {
       if (e.accelerationIncludingGravity) {
@@ -1732,23 +1765,27 @@ If information is received and ambulance is sent press 1`;
         const curY = y || 0;
         const curZ = z || 0;
         
-        setTelemetry({ x: curX, y: curY, z: curZ });
-        
         const g = Math.sqrt(curX**2 + curY**2 + curZ**2) / 9.81;
-        setPeakG(current => g > current ? g : current);
-        
-        setHistory(prev => {
-          const nextId = prev.length > 0 ? (prev[prev.length - 1].id + 1) : 0;
-          const next = [...prev, { g, time: Date.now(), id: nextId }];
-          if (next.length > 30) return next.slice(1);
-          return next;
-        });
 
-        if (g > 6.0 && !isEmergency && !isDistressPendingRef.current) {
-          console.log("[Crash Detection] Critical G-force exceeded (>6G). Triggering immediate broadcast.");
-          initiateDistressBroadcast("Auto-Detected Severe Impact (>6G)", true);
-        } else if (g > 4.0 && !isSafetyCheckingRef.current && !isEmergency && !isDistressPendingRef.current) {
+        if (g > 12.0 && !isEmergencyRef.current && !isDistressPendingRef.current) {
+          console.log("[Crash Detection] Critical G-force exceeded (>12G). Triggering immediate broadcast.");
+          initiateDistressBroadcast("Auto-Detected Severe Impact (>12G)", true);
+        } else if (g > 8.0 && !isSafetyCheckingRef.current && !isEmergencyRef.current && !isDistressPendingRef.current) {
           startSafetyVerification();
+        }
+
+        const now = Date.now();
+        if (now - lastStateUpdate > 250) {
+          lastStateUpdate = now;
+          setTelemetry({ x: curX, y: curY, z: curZ });
+          setPeakG(current => g > current ? g : current);
+          
+          setHistory(prev => {
+            const nextId = prev.length > 0 ? (prev[prev.length - 1].id + 1) : 0;
+            const next = [...prev, { g, time: Date.now(), id: nextId }];
+            if (next.length > 30) return next.slice(1);
+            return next;
+          });
         }
       }
     };
@@ -1818,10 +1855,12 @@ If information is received and ambulance is sent press 1`;
   }
 
   return (
-    <APIProvider apiKey={GOOGLE_MAPS_API_KEY} version="weekly">
-      <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-blue-500/30">
-        <AnimatePresence mode="wait">
-          {isEmergency && (
+    <>
+      {mapsApiKey || hasCheckedKey ? (
+        <APIProvider apiKey={mapsApiKey || 'MISSING'} version="weekly">
+          <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-blue-500/30">
+            <AnimatePresence mode="wait">
+              {isEmergency && (
             <EmergencyUI 
               key="emergency-overlay"
               autoTriggered={true}
@@ -2557,42 +2596,13 @@ If information is received and ambulance is sent press 1`;
                   <div className="space-y-4">
                     <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block flex justify-between">
                       <span>Emergency Contacts</span>
-                      <span className="text-[8px]">DRAG TO REORDER</span>
                     </label>
                     <div className="space-y-2">
                       {(medicalInfo.emergencyContacts || []).map((contact: any, idx: number) => (
                         <div 
-                          key={`${idx}-${contact.number}`}
-                          className="flex gap-2 items-center cursor-move"
-                          draggable
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData('text/plain', idx.toString());
-                            e.currentTarget.classList.add('opacity-50');
-                          }}
-                          onDragEnd={(e) => {
-                            e.currentTarget.classList.remove('opacity-50');
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            e.currentTarget.classList.remove('border-blue-500');
-                            const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
-                            if (isNaN(sourceIdx) || sourceIdx === idx) return;
-                            const newContacts = [...medicalInfo.emergencyContacts];
-                            const [removed] = newContacts.splice(sourceIdx, 1);
-                            newContacts.splice(idx, 0, removed);
-                            setMedicalInfo({ ...medicalInfo, emergencyContacts: newContacts });
-                          }}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            e.currentTarget.classList.add('border-blue-500');
-                          }}
-                          onDragLeave={(e) => {
-                            e.currentTarget.classList.remove('border-blue-500');
-                          }}
+                          key={idx}
+                          className="flex gap-2 items-center"
                         >
-                          <div className="text-slate-500 hover:text-white transition-colors">
-                            <GripVertical size={16} />
-                          </div>
                           <input
                              type="text"
                              placeholder="Label"
@@ -2614,9 +2624,9 @@ If information is received and ambulance is sent press 1`;
                                  newContacts[idx].number = e.target.value;
                                  setMedicalInfo({ ...medicalInfo, emergencyContacts: newContacts });
                                }}
-                               className={`bg-slate-950 border ${contact.number && !/^\\+?[\\d\\s()-]{7,20}$/.test(contact.number) ? 'border-red-500' : 'border-white/10'} rounded-xl px-4 py-3 text-sm font-bold focus:border-blue-500 outline-none w-full cursor-text`}
+                               className={`bg-slate-950 border ${contact.number && (contact.number.replace(/\\D/g, '').length > 15 || /[^+\\d\\s()-]/.test(contact.number)) ? 'border-red-500' : 'border-white/10'} rounded-xl px-4 py-3 text-sm font-bold focus:border-blue-500 outline-none w-full cursor-text`}
                             />
-                            {contact.number && !/^\\+?[\\d\\s()-]{7,20}$/.test(contact.number) && (
+                            {contact.number && (contact.number.replace(/\\D/g, '').length > 15 || /[^+\\d\\s()-]/.test(contact.number)) && (
                               <span className="text-[10px] text-red-500 font-bold px-2">Invalid phone number format</span>
                             )}
                           </div>
@@ -2895,6 +2905,12 @@ If information is received and ambulance is sent press 1`;
           onClose={() => setIsSosModalOpen(false)} 
         />
       </div>
-    </APIProvider>
+        </APIProvider>
+      ) : (
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+            <p className="text-white">Connecting to Map Services...</p>
+        </div>
+      )}
+    </>
   );
 }

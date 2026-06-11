@@ -696,6 +696,10 @@ const getTwilio = () => {
   return twilioClient;
 };
 
+app.get("/api/config/maps", (req, res) => {
+  res.json({ apiKey: process.env.GOOGLE_MAPS_PLATFORM_KEY || process.env.VITE_GOOGLE_MAPS_PLATFORM_KEY || "" });
+});
+
 app.get("/api/config/twilio", (req, res) => {
   res.json({ phoneNumber: process.env.TWILIO_FROM_NUMBER || "+1234567890" });
 });
