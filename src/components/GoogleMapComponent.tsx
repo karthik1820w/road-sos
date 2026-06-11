@@ -203,6 +203,7 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
   // (Removed internal DirectionsRenderer init, polyline is managed via computeRoutes now)
 
   const lastFetchedCenterRef = useRef<{ lat: number, lng: number } | null>(null);
+  const initialFetchDoneRef = useRef(false);
 
   useEffect(() => {
     if (!hasValidKey) return;
@@ -217,13 +218,14 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
       return 2 * R * Math.asin(Math.sqrt(a));
     };
 
-    if (lastFetchedCenterRef.current) {
+    if (lastFetchedCenterRef.current && initialFetchDoneRef.current) {
       const dist = calculateDistance(
         center.lat, center.lng, 
         lastFetchedCenterRef.current.lat, lastFetchedCenterRef.current.lng
       );
       // only refetch if moved more than 1km
       if (dist < 1.0) {
+        setIsLoading(false);
         return;
       }
     }
@@ -236,6 +238,7 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
       const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 seconds timeout
       try {
         const response = await fetch('/api/places/nearby', {
+
           method: 'POST',
           signal: controller.signal,
           headers: {
@@ -332,10 +335,12 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
                   setSelectedHospital(fallbackHosp[0]);
                 }
               }, 0);
+              initialFetchDoneRef.current = true;
               return fallbackHosp;
             }
             return prev;
           });
+          initialFetchDoneRef.current = true;
           setIsLoading(false);
         }
       }

@@ -490,6 +490,7 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
 
 // Status Stores
 let isDrivingModeActive = false;
+let activeUserPhone = "";
 let lastConfirmation = { confirmed: false, responder: "", timestamp: 0 };
 
 // API: Get Emergency Confirmation Status
@@ -583,10 +584,13 @@ app.post("/api/twilio/call-gather", (req, res) => {
 
 // API: Set Driving Mode Status
 app.post("/api/status/driving", (req, res) => {
-  const { active } = req.body;
+  const { active, phone } = req.body;
   isDrivingModeActive = !!active;
-  console.log(`[Status] Driving Mode: ${isDrivingModeActive ? 'ENABLED' : 'DISABLED'}`);
-  res.json({ success: true, isDrivingModeActive });
+  if (phone) {
+    activeUserPhone = phone;
+  }
+  console.log(`[Status] Driving Mode: ${isDrivingModeActive ? 'ENABLED' : 'DISABLED'} for ${activeUserPhone}`);
+  res.json({ success: true, isDrivingModeActive, activeUserPhone });
 });
 
 // API: Twilio Voice Webhook
@@ -595,14 +599,16 @@ app.post("/api/twilio/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
   
   if (isDrivingModeActive) {
-    twiml.say("User is currently driving will speak to you later.");
+    twiml.say("Bob is driving and will reach to you later.");
     twiml.hangup();
   } else {
-    twiml.say("Connecting you to the Road SOS user.");
-    // In a real app, you might dial the user's real number
-    // For this prototype, we'll just acknowledge the call if not driving
-    twiml.say("The user is currently available but Road SOS is in monitoring mode. Please try later or use the distress frequency.");
-    twiml.hangup();
+    twiml.say("Connecting you to Bob.");
+    if (activeUserPhone) {
+      twiml.dial(activeUserPhone);
+    } else {
+      twiml.say("The user is currently available but Road SOS is in monitoring mode. Please try later or use the distress frequency.");
+      twiml.hangup();
+    }
   }
   
   res.type('text/xml');

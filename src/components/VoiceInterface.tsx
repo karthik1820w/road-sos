@@ -40,6 +40,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
   const helpResetTimeoutRef = useRef<any>(null);
   const neonCountRef = useRef<number>(0);
   const neonResetTimeoutRef = useRef<any>(null);
+  const isSpeakingRef = useRef<boolean>(false);
 
   // Conversational state machine overrides
   const [emergencyState, setEmergencyState] = useState<'NORMAL' | 'HEARD_HELP' | 'FIRST_AID_ACTIVE' | 'DISPATCH_PENDING' | 'HELP_ARRIVING'>(initialEmergencyState);
@@ -63,6 +64,10 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
       const utterance = new SpeechSynthesisUtterance(msg);
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
+      isSpeakingRef.current = true;
+      utterance.onstart = () => { isSpeakingRef.current = true; };
+      utterance.onend = () => { isSpeakingRef.current = false; };
+      utterance.onerror = () => { isSpeakingRef.current = false; };
       window.speechSynthesis.speak(utterance);
     }
   };
@@ -102,6 +107,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
       };
 
       recognitionRef.current.onresult = (event: any) => {
+        if (isSpeakingRef.current) return;
         let chunkFinal = '';
         let chunkInterim = '';
         

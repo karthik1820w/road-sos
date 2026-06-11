@@ -26,7 +26,321 @@ const GEMINI_CONFIG = {
   temperature: 0.7,
 };
 
-function buildSystemPrompt() {
+async function geocodeCity(placeName: string) {
+  try {
+     const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(placeName)}&count=1&language=en&format=json`);
+     const data = await res.json();
+     if (data.results && data.results.length > 0) {
+       return { display: data.results[0].name, lat: data.results[0].latitude, lng: data.results[0].longitude };
+     }
+  } catch (e) {
+  }
+  try {
+     const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(placeName)}&format=json&limit=1`);
+     const data = await res.json();
+     if (data && data.length > 0) {
+       return { display: data[0].display_name.split(',')[0], lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+     }
+  } catch (e) {}
+  return null;
+}
+
+const OSRM_ENDPOINTS = [
+  'https://router.project-osrm.org',
+  'https://routing.openstreetmap.de/routed-car',
+];
+
+async function fetchRoute(originLat: number, originLng: number, destLat: number, destLng: number) {
+  const coords = `${originLng},${originLat};${destLng},${destLat}`;
+  const params = [
+    'steps=true',
+    'alternatives=true',
+    'overview=simplified',
+    'geometries=geojson',
+    'annotations=false',
+  ].join('&');
+
+  for (const base of OSRM_ENDPOINTS) {
+    try {
+      const url = `${base}/route/v1/driving/${coords}?${params}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 7000);
+      const res  = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.code !== 'Ok' || !data.routes?.length) {
+        console.warn('[Route] OSRM returned:', data.code, 'from', base);
+        continue;
+      }
+      return data;
+    } catch(e: any) {
+      console.warn('[Route] Endpoint failed:', base, e.message);
+    }
+  }
+  throw new Error('ROUTE_UNAVAILABLE');
+}
+
+function maneuverToText(type: string, modifier: string) {
+  const MANEUVER_MAP: Record<string, string> = {
+    'depart'           : '🚦 Start',
+    'arrive'           : '🏁 Arrive at destination',
+    'turn-left'        : '⬅️  Turn left',
+    'turn-right'       : '➡️  Turn right',
+    'turn-slight left' : '↖️  Bear left',
+    'turn-slight right': '↗️  Bear right',
+    'turn-sharp left'  : '⬅️  Sharp left',
+    'turn-sharp right' : '➡️  Sharp right',
+    'turn-straight'    : '⬆️  Continue straight',
+    'turn-uturn'       : '🔄 Make a U-turn',
+    'merge-left'       : '↙️  Merge left',
+    'merge-right'      : '↘️  Merge right',
+    'on ramp-left'     : '🛣️  Take left ramp',
+    'on ramp-right'    : '🛣️  Take right ramp',
+    'off ramp-left'    : '🛣️  Exit left',
+    'off ramp-right'   : '🛣️  Exit right',
+    'fork-left'        : '↙️  Keep left at fork',
+    'fork-right'       : '↘️  Keep right at fork',
+    'roundabout'       : '🔵 Enter roundabout',
+    'rotary'           : '🔵 Enter rotary',
+    'new name'         : '⬆️  Continue on',
+    'notification'     : '⬆️  Continue on',
+    'end of road-left' : '⬅️  Turn left at end of road',
+    'end of road-right': '➡️  Turn right at end of road',
+  };
+  const key = modifier ? `${type}-${modifier}` : type;
+  return MANEUVER_MAP[key] || MANEUVER_MAP[type] || `⬆️  ${type.replace(/_/g,' ')}`;
+}
+
+function formatDistance(metres: number) {
+  if (metres < 100) return `${Math.round(metres)} m`;
+  if (metres < 1000) return `${Math.round(metres / 10) * 10} m`;
+  if (metres < 10000) return `${(metres / 1000).toFixed(1)} km`;
+  return `${Math.round(metres / 1000)} km`;
+}
+
+function formatDuration(seconds: number) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h} hr ${m} min`;
+  if (m === 0) return 'less than a minute';
+  return `${m} min`;
+}
+
+function parseRoutes(osrmData: any, destName: string) {
+  const routes = (osrmData.routes || []).slice(0, 3);
+  return routes.map((route: any, idx: number) => {
+    const totalDist = route.distance;
+    const totalDur  = route.duration;
+    const legs      = route.legs || [];
+    const steps = [];
+    for (const leg of legs) {
+      for (const step of (leg.steps || [])) {
+        const m    = step.maneuver || {};
+        const type = m.type || 'notification';
+        const mod  = m.modifier || '';
+        const name = step.name || '';
+        const dist = step.distance || 0;
+        if (dist < 20 && !['depart','arrive'].includes(type)) continue;
+        steps.push({
+          instruction : maneuverToText(type, mod),
+          road        : name,
+          distance    : formatDistance(dist),
+          distMetres  : dist,
+          type, mod,
+        });
+      }
+    }
+    const majorRoads = [];
+    const seen = new Set();
+    for (const s of steps) {
+      if (s.road && s.distMetres > 300 && !seen.has(s.road)) {
+        majorRoads.push(s.road);
+        seen.add(s.road);
+        if (majorRoads.length >= 4) break;
+      }
+    }
+    return {
+      index       : idx,
+      label       : idx === 0 ? 'Fastest Route' : idx === 1 ? 'Alternative Route' : 'Scenic Route',
+      totalDist   : formatDistance(totalDist),
+      totalDistM  : totalDist,
+      totalDur    : formatDuration(totalDur),
+      totalDurSec : totalDur,
+      steps       : steps.slice(0, 12),
+      majorRoads,
+      destName,
+      geometry    : route.geometry,
+    };
+  });
+}
+
+function renderRouteCard(routeResult: any) {
+  const el = document.getElementById('route-result');
+  if (!el) return;
+  const best = routeResult.best;
+  const tabsHtml = routeResult.routes.map((r: any, i: number) => `
+    <button onclick="window._showRouteTab(${i})"
+            id="rtab-${i}"
+            style="background:${i === 0 ? 'rgba(59,130,246,0.15)' : 'transparent'};
+                   border:1px solid ${i === 0 ? 'rgba(59,130,246,0.4)' : 'var(--border,rgba(255,255,255,0.08))'};
+                   color:${i === 0 ? '#93C5FD' : 'var(--muted,#888)'};
+                   padding:5px 12px;border-radius:8px;font-size:11px;
+                   cursor:pointer;font-family:inherit;font-weight:500">
+      ${r.label}<br>
+      <span style="font-size:10px">${r.totalDur} · ${r.totalDist}</span>
+    </button>`
+  ).join('');
+
+  const stepsHtml = best.steps.map((s: any) => `
+    <div style="display:flex;gap:10px;align-items:flex-start;
+                padding:7px 0;border-bottom:1px solid var(--border,rgba(255,255,255,0.06))">
+      <div style="font-size:16px;flex-shrink:0;width:24px;text-align:center">
+        ${s.instruction.split(' ')[0]}
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:500">
+          ${s.instruction.replace(/^[^\s]+\s/, '')}
+          ${s.road ? `<span style="color:var(--muted,#888)"> onto ${s.road}</span>` : ''}
+        </div>
+        <div style="font-size:10px;color:var(--muted,#888)">${s.distance}</div>
+      </div>
+    </div>`
+  ).join('');
+
+  el.innerHTML = `
+    <div style="background:#161616;border:1px solid rgba(255,255,255,0.08);
+                border-radius:14px;overflow:hidden;margin:8px 0; max-height: 400px; display: flex; flex-direction: column;">
+      <div style="padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.08);
+                  display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+        <div>
+          <div style="font-size:13px;font-weight:600;color:white">
+            📍 Route to ${routeResult.dest}
+          </div>
+          <div style="font-size:11px;color:#888;margin-top:2px">
+            ${best.totalDur} · ${best.totalDist} · ${best.label}
+          </div>
+        </div>
+        <a href="${routeResult.mapsUrl}" target="_blank" rel="noopener"
+           style="background:rgba(59,130,246,0.15);color:#93C5FD;
+                  border:1px solid rgba(59,130,246,0.3);border-radius:9px;
+                  padding:7px 12px;font-size:12px;text-decoration:none;
+                  font-weight:500;white-space:nowrap;display:flex;
+                  align-items:center;gap:5px">
+          🗺️ Open Maps
+        </a>
+      </div>
+      ${routeResult.routes.length > 1 ? `
+        <div style="padding:10px 16px;display:flex;gap:6px;flex-wrap:wrap;
+                    border-bottom:1px solid rgba(255,255,255,0.08);flex-shrink:0">
+          ${tabsHtml}
+        </div>` : ''}
+      ${best.majorRoads.length ? `
+        <div style="padding:8px 16px;background:rgba(59,130,246,0.05);
+                    border-bottom:1px solid rgba(255,255,255,0.06);
+                    font-size:11px;color:#93C5FD;flex-shrink:0">
+          🛣️ Via: ${best.majorRoads.join(' → ')}
+        </div>` : ''}
+      <div style="padding:4px 16px 12px;overflow-y:auto;flex:1" id="route-steps-container">
+        <div style="font-size:10px;color:#888;
+                    text-transform:uppercase;letter-spacing:1px;
+                    padding:8px 0 4px">
+          Turn-by-turn directions
+        </div>
+        ${stepsHtml}
+      </div>
+    </div>`;
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+(window as any)._showRouteTab = function showRouteTab(idx: number) {
+  const routes = (window as any)._lastRoute?.routes;
+  if (!routes || !routes[idx]) return;
+  routes.forEach((_: any, i: number) => {
+    const tab = document.getElementById(`rtab-${i}`);
+    if (!tab) return;
+    tab.style.background   = i === idx ? 'rgba(59,130,246,0.15)' : 'transparent';
+    tab.style.borderColor  = i === idx ? 'rgba(59,130,246,0.4)' : 'rgba(255,255,255,0.08)';
+    tab.style.color        = i === idx ? '#93C5FD' : '#888';
+  });
+  const stepsDiv = document.getElementById('route-steps-container');
+  if (!stepsDiv) return;
+  const selected = routes[idx];
+  stepsDiv.innerHTML = `
+    <div style="font-size:10px;color:#888;
+                text-transform:uppercase;letter-spacing:1px;padding:8px 0 4px">
+      Turn-by-turn directions
+    </div>
+    ${selected.steps.map((s: any) => `
+      <div style="display:flex;gap:10px;align-items:flex-start;
+                  padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.06)">
+        <div style="font-size:16px;flex-shrink:0;width:24px;text-align:center">
+          ${s.instruction.split(' ')[0]}
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:500;color:white">
+            ${s.instruction.replace(/^[^\s]+\s/, '')}
+            ${s.road ? `<span style="color:#888"> onto ${s.road}</span>` : ''}
+          </div>
+          <div style="font-size:10px;color:#888">${s.distance}</div>
+        </div>
+      </div>`
+    ).join('')}`;
+};
+
+async function handleNavigationQuery(destinationText: string, userLat: number, userLng: number) {
+  if (!userLat || !userLng) {
+    return { error: true, voiceText: 'I need your location to give you directions. Please enable GPS first.' };
+  }
+  const dest = await geocodeCity(destinationText);
+  if (!dest) {
+    return { error: true, voiceText: `I could not find "${destinationText}" on the map. Please say the full name clearly.` };
+  }
+  let osrmData;
+  try {
+    osrmData = await fetchRoute(userLat, userLng, dest.lat, dest.lng);
+  } catch(e) {
+    return { error: true, voiceText: 'I could not calculate the route right now. Please check your internet connection.' };
+  }
+  const routes = parseRoutes(osrmData, dest.display);
+  if (!routes.length) {
+    return { error: true, voiceText: `I found ${dest.display} but could not calculate a driving route.` };
+  }
+  const best = routes[0];
+  const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${userLat},${userLng}&destination=${dest.lat},${dest.lng}&travelmode=driving`;
+  const appleMapsUrl = `http://maps.apple.com/?saddr=${userLat},${userLng}&daddr=${dest.lat},${dest.lng}&dirflg=d`;
+  
+  (window as any)._lastRoute = {
+    destination: dest.display, destLat: dest.lat, destLng: dest.lng, routes, mapsUrl, fetchedAt: new Date().toLocaleTimeString(),
+  };
+
+  return { error: false, dest: dest.display, routes, best, mapsUrl, appleMapsUrl };
+}
+
+function buildSystemPrompt(isRoute: boolean = false) {
+  const R = (window as any)._lastRoute;
+  const routeSection = (isRoute && R) ? `
+=== LIVE ROUTE DATA (fetched ${R.fetchedAt}) ===
+Destination  : ${R.destination}
+Best route   : ${R.routes[0]?.label} — ${R.routes[0]?.totalDur}, ${R.routes[0]?.totalDist}
+Via roads    : ${R.routes[0]?.majorRoads.join(' → ') || 'Local roads'}
+Key turns (first 5):
+${R.routes[0]?.steps.slice(0,5).map((s: any) =>
+  `  • ${s.instruction}${s.road ? ' onto ' + s.road : ''} — ${s.distance}`
+).join('\n')}
+Alternatives : ${R.routes.length > 1
+  ? R.routes.slice(1).map((r: any) => `${r.label} (${r.totalDur}, ${r.totalDist})`).join('; ')
+  : 'None'}
+Maps link    : ${R.mapsUrl}
+=================================================
+When answering about this route:
+- Speak the route naturally in 2–3 sentences like a navigator would
+- Mention the TOTAL travel time first (most important for driver)
+- Name the 2–3 major roads/landmarks by name
+- End by saying "I've shown the full route on your screen"
+- Do NOT list all steps — just the key ones verbally
+` : '';
+
   const td = (window as any)._liveTrafficData;
 
   const trafficSection = td ? `
@@ -84,6 +398,7 @@ VOICE RESPONSE RULES:
 - If you truly cannot answer, say: "I'm not sure about that, but I can
   help with road safety and traffic questions."
 
+${routeSection}
 ${trafficSection}`;
 }
 
@@ -343,7 +658,16 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         }
     }, 2000);
 
+    const handleChatbotQueryEvent = (e: any) => {
+        const queryText = e.detail;
+        if (queryText) {
+            handleQuery(queryText);
+        }
+    };
+    window.addEventListener('chatbot-query', handleChatbotQueryEvent);
+
     return () => {
+      window.removeEventListener('chatbot-query', handleChatbotQueryEvent);
       clearTimeout(timer);
       clearInterval(memoryLeakInterval);
       clearInterval(watchdogInterval);
@@ -375,6 +699,114 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
 
   const handleQuery = async (text: string) => {
     setState('PROCESSING');
+
+    // --- Navigation Intent Detector ---
+    const tLower = text.toLowerCase();
+    const NAV_TRIGGERS = [
+      'go to', 'how to go', 'how do i go', 'how to reach', 'how to get to',
+      'route to', 'route for', 'directions to', 'navigate to',
+      'way to', 'path to', 'road to',
+      'i want to go', 'i need to go', 'i am going to', 'take me to',
+      'drive to', 'best route', 'best way', 'shortest way',
+      'how to come to', 'which road', 'which route',
+      'tell me the way', 'show route', 'show way',
+    ];
+    const isNavigation = NAV_TRIGGERS.some(k => tLower.includes(k));
+    
+    let navigationDestination = null;
+    if (isNavigation) {
+      const NAV_DEST_PATTERNS = [
+        /(?:go to|route to|navigate to|directions to|drive to|take me to|way to|path to|get to|reach|come to|going to)\s+([a-zA-Z][a-zA-Z\s,\.]{1,40}?)(?:\?|$|\.|\s+from|\s+via)/i,
+        /(?:how to|best|shortest)\s+(?:go|route|way|reach|get)\s+(?:to\s+)?([a-zA-Z][a-zA-Z\s,\.]{1,40}?)(?:\?|$|\.)/i,
+        /(?:to|towards)\s+([a-zA-Z][a-zA-Z\s]{1,30}?)(?:\?|$|\s+from\s)/i,
+      ];
+      for (const pattern of NAV_DEST_PATTERNS) {
+        const m = text.match(pattern);
+        if (m && m[1]) {
+          const raw = m[1].trim().replace(/\s+/g,' ');
+          const STOP_WORDS = ['me','you','there','here','it','this','that','my','your','the','a','an','now','today'];
+          if (!STOP_WORDS.includes(raw.toLowerCase()) && raw.length > 1) {
+            navigationDestination = raw;
+            break;
+          }
+        }
+      }
+    }
+
+    if (isNavigation) {
+      if (!navigationDestination) {
+        const msg = 'Where would you like to go? Say the full name of the place, like "go to Malleswaram" or "route to Indiranagar".';
+        setLastResponse(msg);
+        speak(msg);
+        return;
+      }
+
+      speak(`Finding the best route to ${navigationDestination}. One moment.`);
+      try {
+        let userLat = userLocation?.lat || (window as any)._currentCoords?.lat;
+        let userLng = userLocation?.lng || (window as any)._currentCoords?.lng;
+        
+        if (!userLat || !userLng) {
+            // Need a way to fetch if empty? In `ChatbotModal`, it does not have getGPS access, but it assumes the App passed it in `userLocation`.
+            // Just pass it anyway to handleNavigationQuery and let it fail if null.
+        }
+
+        const routeResult = await handleNavigationQuery(navigationDestination, userLat, userLng);
+
+        if (routeResult.error) {
+          setLastResponse(routeResult.voiceText);
+          speak(routeResult.voiceText);
+          return;
+        }
+
+        const routePrompt = 
+            `The user wants directions from their current location to ${routeResult.dest}. `
+          + `Here is the REAL route data:\n`
+          + `Best route: ${routeResult.best.totalDur} travel time, ${routeResult.best.totalDist} distance.\n`
+          + `Via: ${routeResult.best.majorRoads.join(' → ') || 'local roads'}.\n`
+          + `First 3 key turns:\n`
+          + routeResult.best.steps.slice(0,3).map((s: any) =>
+              `${s.instruction}${s.road ? ' onto ' + s.road : ''} (${s.distance})`
+            ).join(', ')
+          + `\n\nDescribe this route naturally in 2–3 spoken sentences. `
+          + `Lead with the total travel time. Mention the 2 main roads by name. `
+          + `End with "I've shown the full turn-by-turn directions on your screen." `
+          + `No bullet points. Natural Indian English.`;
+
+        const systemPrompt = buildSystemPrompt(true); // true means isRoute
+        
+        let aiReply;
+        try {
+            aiReply = await callGemini(routePrompt, systemPrompt);
+        } catch(e) {
+            aiReply = `The fastest route to ${routeResult.dest} takes `
+                    + `${routeResult.best.totalDur} and covers ${routeResult.best.totalDist}. `
+                    + (routeResult.best.majorRoads.length
+                       ? `You will travel via ${routeResult.best.majorRoads.slice(0,2).join(' and ')}. `
+                       : '')
+                    + `I have shown the full directions on your screen.`;
+        }
+
+        const conversationHistory = JSON.parse(localStorage.getItem('chatbot_context') || '[]');
+        conversationHistory.push({ role: 'user', text });
+        conversationHistory.push({ role: 'assistant', text: aiReply });
+        localStorage.setItem('chatbot_context', JSON.stringify(conversationHistory.slice(-10)));
+
+        setLastResponse(aiReply);
+        speak(aiReply);
+        
+        // Timeout to ensure DOM is updated before rendering the card!
+        setTimeout(() => renderRouteCard(routeResult), 100);
+        return;
+      } catch (err) {
+         console.error(err);
+         const msg = "Sorry, I had an error fetching your route.";
+         setLastResponse(msg);
+         speak(msg);
+         return;
+      }
+    }
+    // --- End Navigation Intent Detector ---
 
     if (isTrafficQuestion(text) && !(window as any)._liveTrafficData) {
       console.log("Chatbot: Intercepted traffic question. Fetching data implicitly.");
@@ -532,10 +964,12 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         )}
 
         {lastResponse && state !== 'LISTENING' && (
-            <div className="w-full bg-slate-800 border border-slate-700 p-5 rounded-2xl mb-4">
+            <div className="w-full bg-slate-800 border border-slate-700 p-5 rounded-2xl mb-4 text-left">
                 <p className="text-white font-medium text-lg leading-relaxed">{lastResponse}</p>
             </div>
         )}
+        
+        <div id="route-result" className="w-full text-left"></div>
 
         <form onSubmit={handleManualSubmit} className="w-full mt-4 flex gap-2">
           <input

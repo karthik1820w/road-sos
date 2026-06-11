@@ -269,7 +269,7 @@ export default function App() {
     }
 
     try {
-      await executeWithOfflineFallback('/api/status/driving', 'POST', { active: newState });
+      await executeWithOfflineFallback('/api/status/driving', 'POST', { active: newState, phone: userPhone });
       
       try {
         const res = await fetch('/api/config/twilio');
@@ -290,14 +290,19 @@ export default function App() {
     }
   };
 
+  const toggleDrivingModeRef = useRef(toggleDrivingMode);
+  useEffect(() => {
+    toggleDrivingModeRef.current = toggleDrivingMode;
+  }, [toggleDrivingMode]);
+
   useEffect(() => {
     // Initial sync
-    executeWithOfflineFallback('/api/status/driving', 'POST', { active: isDrivingMode }).catch(e => {
+    executeWithOfflineFallback('/api/status/driving', 'POST', { active: isDrivingMode, phone: userPhone }).catch(e => {
         // Suppress initial failed to fetch if server is just starting up, 
         // to avoid noisy console errors on hot reloads.
         console.warn("Initial driving sync pending server availability.");
     });
-  }, []);
+  }, [userPhone]);
 
   const [showDrivingSimulator, setShowDrivingSimulator] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(() => {
@@ -343,6 +348,8 @@ export default function App() {
   const isAIFirstAidActiveRef = useRef(false);
   const aiFirstAidTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isBroadcastingRef = useRef(false);
+  const isSpeakingRef = useRef(false);
+  const ignoreNextFinalRef = useRef(false);
 
   // Safety Verification Flow States
   const [isSafetyChecking, setIsSafetyChecking] = useState(false);
@@ -1056,6 +1063,10 @@ If information is received and ambulance is sent press 1`;
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
+      isSpeakingRef.current = true;
+      utterance.onstart = () => { isSpeakingRef.current = true; };
+      utterance.onend = () => { isSpeakingRef.current = false; };
+      utterance.onerror = () => { isSpeakingRef.current = false; };
       window.speechSynthesis.speak(utterance);
     }
   };
@@ -1224,13 +1235,14 @@ If information is received and ambulance is sent press 1`;
     }
 
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition && isMonitoring) {
+    if (SpeechRecognition) {
       backgroundRecognitionRef.current = new SpeechRecognition();
       backgroundRecognitionRef.current.continuous = true;
       backgroundRecognitionRef.current.interimResults = true;
       backgroundRecognitionRef.current.lang = 'en-US';
 
       backgroundRecognitionRef.current.onresult = (event: any) => {
+        if (isSpeakingRef.current) return;
         let finalTranscript = '';
         let interimTranscript = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -1248,9 +1260,37 @@ If information is received and ambulance is sent press 1`;
         const cleanInterim = normalizeStr(interimTranscript);
         const cleanCombined = normalizeStr(finalTranscript + ' ' + interimTranscript);
 
+        const isWakeupCommand = cleanCombined.includes('wakeup the application') || cleanCombined.includes('wake up the application') || cleanCombined.includes('start the application') || cleanCombined.includes('start the app') || cleanCombined.includes('wake up the app') || cleanCombined.includes('wakeup the app') || cleanCombined.includes('activate the application') || cleanCombined.includes('activate the app');
+
+        if (!isMonitoring) {
+           if (isWakeupCommand) {
+              speakNotification("Waking up the application. Road SOS protection is now active.");
+              setIsMonitoring(true);
+              if(backgroundRecognitionRef.current) {
+                backgroundRecognitionRef.current.abort();
+              }
+           }
+           // IMPORTANT: If not monitoring and not a wakeup command, IGNORE everything else.
+           return;
+        }
+
         // Unified Rolling Transcript for Core Panic Words (Fallback & Safety Word Check)
         if (cleanFinal.length > 0) {
            rollingTranscriptsRef.current.push({ text: cleanFinal, time: Date.now() });
+
+           if (isAIFirstAidActiveRef.current) {
+             if (ignoreNextFinalRef.current) {
+               ignoreNextFinalRef.current = false; // consume ignore flag
+             } else {
+               if (aiFirstAidTimeoutRef.current) clearTimeout(aiFirstAidTimeoutRef.current);
+               const incident = cleanFinal.replace(/\bfirst aid\b/g, "").trim();
+               if (incident !== "") {
+                 console.log(`[AI First Aid] Processing incident: "${incident}"`);
+                 handleAIFirstAid(incident);
+                 if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return; 
+               }
+             }
+           }
         }
         
         const currentNow = Date.now();
@@ -1289,6 +1329,10 @@ If information is received and ambulance is sent press 1`;
                     speakNotification("First aid assistant timed out.");
                   }
                 }, 15000);
+            }
+            if (backgroundRecognitionRef.current) {
+              ignoreNextFinalRef.current = true;
+              backgroundRecognitionRef.current.abort();
             }
             return;
         }
@@ -1410,43 +1454,45 @@ If information is received and ambulance is sent press 1`;
            }
 
            // Voice Controls for Features (Alexa style)
-           if (cleanCombined.includes("turn on driving mode") || cleanCombined.includes("start driving mode") || cleanCombined.includes("enable driving mode") || cleanCombined.includes("drive mode on") || cleanCombined.includes("turn on drive mode") || cleanCombined.includes("turn driving mode on") || cleanCombined.includes("driving mode on")) {
+           const turnOnDriveRegex = /\b(turn on|start|enable|activat|begin)\b.*\b(driving mode|drive mode)\b|\b(driving mode|drive mode)\b.*\b(on)\b/i;
+           const turnOffDriveRegex = /\b(turn off|stop|disable|deactivat|end)\b.*\b(driving mode|drive mode)\b|\b(driving mode|drive mode)\b.*\b(off)\b/i;
+
+           if (turnOnDriveRegex.test(cleanCombined)) {
              if (!isDrivingModeRef.current) {
-               toggleDrivingMode(); // will speak 'Driving mode engaged'
+               toggleDrivingModeRef.current(); // will speak 'Driving mode engaged'
              } else {
                speakNotification("Driving mode is already on.");
              }
              if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
-           } else if (cleanCombined.includes("turn off driving mode") || cleanCombined.includes("stop driving mode") || cleanCombined.includes("disable driving mode") || cleanCombined.includes("drive mode off") || cleanCombined.includes("driving mode off") || cleanCombined.includes("turn drive mode off") || cleanCombined.includes("turn off drive mode")) {
+           } else if (turnOffDriveRegex.test(cleanCombined)) {
              if (isDrivingModeRef.current) {
-               toggleDrivingMode();
+               toggleDrivingModeRef.current();
              } else {
                speakNotification("Driving mode is already off.");
              }
              if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            }
 
+           if (cleanCombined.includes('wakeup the application') || cleanCombined.includes('wake up the application') || cleanCombined.includes('start the application') || cleanCombined.includes('start the app') || cleanCombined.includes('wake up the app') || cleanCombined.includes('wakeup the app')) {
+             if (!isMonitoring) {
+               speakNotification("Waking up the application. Road SOS protection is now active.");
+               setIsMonitoring(true);
+             } else {
+               speakNotification("The application is already awake and active.");
+             }
+             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+           }
+
            if (cleanCombined.includes('shutdown the application') || cleanCombined.includes('shut down the application') || cleanCombined.includes('close the application') || cleanCombined.includes('close the app') || cleanCombined.includes('shutdown the app') || cleanCombined.includes('shut down the app')) {
-             speakNotification("Shutting down the application.");
-             setTimeout(() => {
-                 setIsMonitoring(false);
-                 if ((window as any)._heldAudioStream) {
-                     (window as any)._heldAudioStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-                     (window as any)._heldAudioStream = null;
-                 }
-                 try {
-                     window.close();
-                 } catch(e) {}
-                 if ("app" in navigator && (navigator as any).app && (navigator as any).app.exitApp) {
-                     (navigator as any).app.exitApp();
-                 }
-                 window.location.href = "about:blank";
-             }, 1500);
+             speakNotification("Shutting down the application. Voice wake up is still active.");
+             setIsMonitoring(false);
              if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            }
            
            if (cleanCombined.includes("open voice assistant") || cleanCombined.includes("open chatbot") || cleanCombined.includes("start voice assistant")) {
              setIsVoiceActive(true);
+             setIsChatbotModalOpen(true);
+             setChatbotGreeting("Voice assistant opened. How can I help you?");
              speakNotification("Voice assistant opened. How can I help you?");
              if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            } else if (cleanCombined.includes("close voice assistant") || cleanCombined.includes("close chatbot") || cleanCombined.includes("stop voice assistant") || cleanCombined.includes("close assistant") || cleanCombined.includes("stop chatbot") || cleanCombined.includes("exit assistant") || cleanCombined.includes("exit chatbot")) {
@@ -1507,6 +1553,18 @@ If information is received and ambulance is sent press 1`;
            }
 
            // App UI Commands
+           const navPatterns = ['navigate to', 'take me to', 'directions to', 'go to', 'route to', 'drive to'];
+           if (navPatterns.some(kw => cleanCombined.includes(kw))) {
+               console.log("Voice Command: Navigation");
+               setChatbotGreeting(cleanCombined); // Chatbot will process this as initial greeting, but actually the chatbot only speaks the initial greeting.
+               // We can trigger a custom event that ChatbotModal listens to!
+               setIsChatbotModalOpen(true);
+               setTimeout(() => {
+                 window.dispatchEvent(new CustomEvent('chatbot-query', { detail: cleanCombined }));
+               }, 500);
+               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+           }
+
            if (cleanCombined === "hello" || cleanCombined.includes("hello") || cleanCombined === "hi" || cleanCombined === "heilo" || cleanCombined.includes("hi ") || cleanCombined.includes("hey ")) {
                console.log("Voice Command: Hello");
                setChatbotGreeting("HEILO bob how are you doing!");
@@ -1545,13 +1603,6 @@ If information is received and ambulance is sent press 1`;
                isWaitingForMapSearchRef.current = false;
                speakNotification(`Searching map for ${cleanCombined.trim()}`);
            }
-
-           if (isAIFirstAidActiveRef.current) {
-             if (aiFirstAidTimeoutRef.current) clearTimeout(aiFirstAidTimeoutRef.current);
-             console.log(`[AI First Aid] Processing incident: "${cleanCombined}"`);
-             handleAIFirstAid(cleanCombined);
-             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return; // Stop processing further commands once we consume this for AI
-           }
          }
       };
 
@@ -1561,7 +1612,7 @@ If information is received and ambulance is sent press 1`;
 
       backgroundRecognitionRef.current.onend = () => {
         window.dispatchEvent(new CustomEvent('health-mic-active', { detail: false }));
-        if (isMonitoring && !isEmergency && !isVoiceActive && !isChatbotModalOpen) {
+        if (!isEmergency && !isVoiceActive && !isChatbotModalOpen) {
           setTimeout(() => {
             if (backgroundRecognitionRef.current) {
                try {
@@ -1605,7 +1656,7 @@ If information is received and ambulance is sent press 1`;
     
     // Watchdog Interval to ensure it stays alive unconditionally
     const watchdogInterval = setInterval(() => {
-        if (isMonitoring && !isEmergency && !isVoiceActive && !isChatbotModalOpen && backgroundRecognitionRef.current) {
+        if (!isEmergency && !isVoiceActive && !isChatbotModalOpen && backgroundRecognitionRef.current) {
             try {
                 // If it's already started, this will throw "InvalidStateError". We catch and ignore it.
                 // If it silently died (without onend, common on Chrome), this will jumpstart it.
@@ -2264,7 +2315,7 @@ If information is received and ambulance is sent press 1`;
                       </div>
                       <div>
                          <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-1">Status: Active Transit</p>
-                         <h4 className="text-sm font-bold">Auto-Reply: "User is currently driving"</h4>
+                         <h4 className="text-sm font-bold">Auto-Reply: "Bob is driving and will reach to you later."</h4>
                       </div>
                    </div>
                    <button 
@@ -2292,7 +2343,7 @@ If information is received and ambulance is sent press 1`;
                   <p className="text-slate-400 text-sm mb-6">Dispatch or Contact is trying to reach you...</p>
                   <div className="bg-slate-950 border border-white/5 p-4 rounded-2xl mb-8">
                      <p className="text-xs font-mono text-amber-500 uppercase tracking-widest mb-2">Auto-Message Sent:</p>
-                     <p className="text-sm italic font-medium">"I am currently driving/riding my vehicle and using RoadSOS. Please hold or I will call back shortly."</p>
+                     <p className="text-sm italic font-medium">"Bob is driving and will reach to you later."</p>
                   </div>
                   <button 
                     onClick={() => setShowDrivingSimulator(false)}
