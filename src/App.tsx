@@ -17,11 +17,7 @@ import { TrafficUpdate, fetchLiveTrafficData } from './services/trafficService';
 import { TrafficUpdatesUI } from './components/TrafficUpdatesUI';
 
 
-const INITIAL_GOOGLE_MAPS_KEY =
-  process.env.GOOGLE_MAPS_PLATFORM_KEY ||
-  (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY ||
-  (globalThis as any).GOOGLE_MAPS_PLATFORM_KEY ||
-  '';
+const INITIAL_GOOGLE_MAPS_KEY = '';
 
 import { SOSTrigger } from './components/SOSTrigger';
 import { geoapifyService } from './services/geoapifyService';
@@ -857,7 +853,7 @@ If information is received and ambulance is sent press 1`;
       await new Promise(resolve => setTimeout(resolve, 2000));
 
       // Initiate Call concurrently for all targets
-      await Promise.all(targetNumbers.map(targetNumber => 
+      await Promise.all(targetNumbers.map((targetNumber: string) => 
         executeWithOfflineFallback('/api/sos/call-initiate', 'POST', { 
             to: targetNumber,
             message: isHelpCommand ? distressCallMessage : "Emergency Alert. Patient in danger. Please press 1 to confirm dispatch.",
@@ -871,7 +867,7 @@ If information is received and ambulance is sent press 1`;
       }
 
       // Send PDF Report to targets via messenger
-      await Promise.all(targetNumbers.map(targetNumber => 
+      await Promise.all(targetNumbers.map((targetNumber: string) => 
         executeWithOfflineFallback('/api/sos/send-report', 'POST', {
             responder: targetNumber,
             logs: logsRef.current.slice(0, 50),
@@ -1224,7 +1220,7 @@ If information is received and ambulance is sent press 1`;
       await new Promise(resolve => setTimeout(resolve, 2000));
 
       // 2. Initiate Call concurrently for all targets
-      await Promise.all(targetNumbers.map(targetNumber => 
+      await Promise.all(targetNumbers.map((targetNumber: string) => 
         executeWithOfflineFallback('/api/sos/call-initiate', 'POST', { 
             to: targetNumber,
             message: callMessage,
@@ -1233,7 +1229,7 @@ If information is received and ambulance is sent press 1`;
       ));
 
       // 3. Send PDF Report to targets via messenger
-      await Promise.all(targetNumbers.map(targetNumber => 
+      await Promise.all(targetNumbers.map((targetNumber: string) => 
         executeWithOfflineFallback('/api/sos/send-report', 'POST', {
             responder: targetNumber,
             logs: logsRef.current.slice(0, 50),
@@ -2423,6 +2419,7 @@ If information is received and ambulance is sent press 1`;
                   markers={[{ ...userLocation, title: 'You', color: '#3b82f6' }]}
                   showTrafficLayer={showTrafficMap}
                   voiceMapQuery={voiceMapQuery}
+                  hasValidKey={mapsApiKey !== '' && mapsApiKey !== 'MISSING' && mapsApiKey !== 'MISSING_DEV_KEY'}
                 />
               ) : (
                 <div className="overflow-hidden rounded-3xl border border-slate-800 shadow-2xl bg-slate-900 h-[300px] relative w-full flex flex-col items-center justify-center gap-3">

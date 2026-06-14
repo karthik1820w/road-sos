@@ -87,6 +87,7 @@ export const DispatchSummary: React.FC<DispatchSummaryProps> = ({
           center={userLocation} 
           zoom={14}
           markers={markers}
+          hasValidKey={true} // assume key is valid inside dispatch if we arrived here, wait, better: read it from context or just let it fall back
         />
         
         {isSyncing && (

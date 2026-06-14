@@ -7,6 +7,9 @@ import twilio from "twilio";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import PDFDocument from "pdfkit";
+import cookieParser from "cookie-parser";
+import { z } from "zod";
+import xss from "xss";
 
 dotenv.config();
 
@@ -22,10 +25,39 @@ const PORT = 3000;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.set("trust proxy", true);
+app.use(cookieParser());
+app.set("trust proxy", 1);
+
+import rateLimit from "express-rate-limit";
+
+// Global API Limiter to prevent basic scraping and abuse
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 300, 
+  handler: (req, res) => {
+    console.warn(`[Security Alert] Unusual global traffic pattern detected from IP: ${req.ip}`);
+    res.status(429).json({ error: "Too many requests from this IP, please try again later." });
+  }
+});
+
+// Specific AI Limiter to prevent abuse of generative resources
+const aiLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 Hour
+  max: 50,
+  handler: (req, res) => {
+    console.warn(`[Security Alert] Too many AI Generation requests from IP: ${req.ip}`);
+    res.status(429).json({ error: "Too many AI generation requests, please try again later." });
+  }
+});
+
+app.use("/api/", apiLimiter);
+app.use("/api/ai/", aiLimiter);
 
 // Expose io to routes if needed
 (app as any).io = io;
+
+import authRoutes from ".//auth.js";
+app.use("/api/auth", authRoutes);
 
 io.on("connection", (socket) => {
   console.log(`[Socket] Client connected: ${socket.id}`);
@@ -38,7 +70,7 @@ io.on("connection", (socket) => {
 // Gemini Configuration
 let aiClient: GoogleGenAI | null = null;
 const getAI = () => {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured.");
   }
@@ -246,7 +278,7 @@ setInterval(updateWeather, 10 * 60 * 1000); // 10 minutes
 let langchainConversation: RunnableWithMessageHistory<any, any> | null = null;
 const getLangchainConversation = () => {
   if (!langchainConversation) {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY is not configured.");
     
     // We use gemini-2.5-flash-lite for speed and conversational capabilities
@@ -295,10 +327,66 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
   return langchainConversation;
 };
 
+// API: Secure AI Chat endpoint to avoid exposing GEMINI_API_KEY to frontend
+app.post("/api/ai/chat", async (req, res) => {
+  try {
+    const { userText, history, systemPrompt } = z.object({ 
+      userText: z.string().min(1), 
+      history: z.array(z.object({ role: z.string(), text: z.string() })).optional(),
+      systemPrompt: z.string().optional() 
+    }).parse(req.body);
+    const safeUserText = xss(userText);
+    const safeSystemPrompt = systemPrompt ? xss(systemPrompt) : undefined;
+
+    let contents: any = safeUserText;
+    if (history && history.length > 0) {
+      contents = history.map((h) => ({
+        role: h.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: xss(h.text) }]
+      }));
+      contents.push({ role: 'user', parts: [{ text: safeUserText }] });
+    }
+    
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: contents,
+      config: {
+        systemInstruction: safeSystemPrompt,
+        maxOutputTokens: 350,
+        temperature: 0.7,
+      }
+    });
+
+    if (response.text) {
+      res.json({ text: response.text });
+    } else {
+      res.status(500).json({ error: "No text returned from Gemini." });
+    }
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: "Invalid input" });
+    }
+    console.error(`[AI Chat Error]`, error.message);
+    if (error.message && (error.message.includes("quota") || error.message.includes("429"))) {
+      return res.status(429).json({ error: "EXHAUSTED" });
+    }
+    res.status(500).json({ error: error.message || "Failed to call AI." });
+  }
+});
+
 // API: AI Road Assistant
 app.post("/api/ai/ask", async (req, res) => {
-  const { question, stream, location } = req.body;
-  if (!question) return res.status(400).json({ error: "Question is required" });
+  try {
+    const schema = z.object({ 
+      question: z.string().min(1), 
+      stream: z.boolean().optional(),
+      location: z.object({ lat: z.number(), lng: z.number() }).optional()
+    });
+    const parsed = schema.parse(req.body);
+    const question = xss(parsed.question);
+    const stream = parsed.stream;
+    const location = parsed.location;
   
   let location_context = "Location not provided by user.";
   let nearest_hospital_context = "Cannot determine nearest hospital without user location.";
@@ -307,7 +395,7 @@ app.post("/api/ai/ask", async (req, res) => {
      location_context = `Latitude: ${location.lat}, Longitude: ${location.lng}`;
      if (question.toLowerCase().includes("hospital") || question.toLowerCase().includes("clinic") || question.toLowerCase().includes("navigate") || question.toLowerCase().includes("nearest")) {
        try {
-         const apiKey = process.env.GOOGLE_MAPS_PLATFORM_KEY || process.env.VITE_GOOGLE_MAPS_PLATFORM_KEY;
+         const apiKey = process.env.GOOGLE_MAPS_PLATFORM_KEY;
          if (apiKey) {
             const placesUrl = `https://places.googleapis.com/v1/places:searchNearby`;
             const hRes = await fetch(placesUrl, {
@@ -414,7 +502,7 @@ app.post("/api/ai/ask", async (req, res) => {
           response = { content: "I'm experiencing connectivity issues right now. Ensure standard safety protocols, apply firm pressure to any bleeding wounds, and wait for emergency services." };
        } else if (e.message?.includes("503") || e.message?.includes("UNAVAILABLE") || e.message?.includes("high demand") || e.message?.includes("429")) {
           console.log("[Ask API] gemini-2.5-flash-lite failed, falling back.");
-          const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+          const apiKey = process.env.GEMINI_API_KEY;
           const fallbackModel = new ChatGoogleGenerativeAI({
             model: "gemini-1.5-flash-8b",
             apiKey: apiKey,
@@ -486,6 +574,12 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
     }
     res.json({ answer: "I'm experiencing connectivity issues right now. How else can I assist you with safety?", error_detail: "Connection Issue" });
   }
+  } catch (outerError: any) {
+    if (outerError instanceof z.ZodError) {
+      return res.status(400).json({ error: "Invalid input" });
+    }
+    return res.status(500).json({ error: outerError.message });
+  }
 });
 
 // Status Stores
@@ -500,14 +594,19 @@ app.get("/api/emergencies/confirmation-status", (req, res) => {
 
 // API: Confirm Emergency Response manually (from Simulation UI or internal triggers)
 app.post("/api/emergencies/confirm", (req, res) => {
-  const { responder = "Regional Trauma Center" } = req.body;
-  lastConfirmation = {
-    confirmed: true,
-    responder,
-    timestamp: Date.now()
-  };
-  console.log(`[Status] Manual confirmation received from: ${responder}`);
-  res.json({ success: true, lastConfirmation });
+  try {
+    const { responder } = z.object({ responder: z.string().optional().default("Regional Trauma Center") }).parse(req.body);
+    const safeResponder = xss(responder);
+    lastConfirmation = {
+      confirmed: true,
+      responder: safeResponder,
+      timestamp: Date.now()
+    };
+    console.log(`[Status] Manual confirmation received from: ${safeResponder}`);
+    res.json({ success: true, lastConfirmation });
+  } catch (err) {
+    res.status(400).json({ error: "Invalid input" });
+  }
 });
 
 // API: Reset Confirmation Status (to begin a fresh monitoring sequence)
@@ -518,9 +617,11 @@ app.post("/api/emergencies/confirmation-reset", (req, res) => {
 
 // API: Twilio SMS reply webhook
 app.post("/api/twilio/sms", (req, res) => {
-  const body = (req.body.Body || "").toLowerCase().trim();
-  const from = req.body.From || "Emergency Dispatch";
-  console.log(`[Twilio Webhook] Received SMS reply: "${body}" from ${from}`);
+  try {
+    const parsed = z.object({ Body: z.string().optional(), From: z.string().optional() }).parse(req.body);
+    const body = (parsed.Body || "").toLowerCase().trim();
+    const from = xss(parsed.From || "Emergency Dispatch");
+    console.log(`[Twilio Webhook] Received SMS reply: "${xss(body)}" from ${from}`);
   
   // Typical acknowledgment words
   const keywords = ["yes", "ok", "confirm", "coming", "on my way", "arrival", "ack", "active", "help", "en route", "dispatched", "will attend", "1"];
@@ -542,12 +643,19 @@ app.post("/api/twilio/sms", (req, res) => {
   
   res.type('text/xml');
   res.send(twiml.toString());
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Invalid input" });
+    }
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 // API: Twilio Call Gather webhook for keypress "1" confirm
 app.post("/api/twilio/call-gather", (req, res) => {
   try {
-    const digits = req.body.Digits;
+    const parsed = z.object({ Digits: z.string().optional() }).parse(req.body);
+    const digits = xss(parsed.Digits || "");
     const hostUrl = `${req.protocol}://${req.get('host')}`;
     console.log(`[Twilio Call Gather] Keypress digit received: ${digits}`);
     
@@ -584,13 +692,18 @@ app.post("/api/twilio/call-gather", (req, res) => {
 
 // API: Set Driving Mode Status
 app.post("/api/status/driving", (req, res) => {
-  const { active, phone } = req.body;
-  isDrivingModeActive = !!active;
-  if (phone) {
-    activeUserPhone = phone;
+  try {
+    const { active, phone } = z.object({ active: z.boolean().optional(), phone: z.string().optional() }).parse(req.body);
+    isDrivingModeActive = !!active;
+    if (phone) {
+      activeUserPhone = xss(phone);
+    }
+    console.log(`[Status] Driving Mode: ${isDrivingModeActive ? 'ENABLED' : 'DISABLED'} for ${activeUserPhone}`);
+    res.json({ success: true, isDrivingModeActive, activeUserPhone });
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ error: "Invalid input" });
+    return res.status(500).json({ error: "Internal Error" });
   }
-  console.log(`[Status] Driving Mode: ${isDrivingModeActive ? 'ENABLED' : 'DISABLED'} for ${activeUserPhone}`);
-  res.json({ success: true, isDrivingModeActive, activeUserPhone });
 });
 
 // API: Twilio Voice Webhook
@@ -616,57 +729,73 @@ app.post("/api/twilio/voice", (req, res) => {
 });
 
 app.post("/api/sos/send-report", async (req, res) => {
-  const { responder, logs, medicalInfo } = req.body;
-  if (!responder) return res.status(400).json({ error: "Missing responder" });
-
   try {
-    const doc = new PDFDocument();
-    const buffers: Buffer[] = [];
-    doc.on('data', buffers.push.bind(buffers));
-    
-    // Generate PDF content
-    doc.fontSize(20).text("RoadSOS Accident Report", { align: 'center' });
-    doc.moveDown();
-    doc.fontSize(14).text(`Patient Name: ${medicalInfo?.name || 'Unknown'}`);
-    doc.text(`Blood Group: ${medicalInfo?.bloodGroup || 'Unknown'}`);
-    doc.text(`Medical Conditions: ${medicalInfo?.conditions || 'None'}`);
-    doc.moveDown();
-    doc.fontSize(16).text("Recent Accident Logs:");
-    doc.fontSize(12);
-    (logs || []).forEach((log: any) => {
-      doc.text(`[${new Date(log.timestamp).toLocaleString()}] ${log.message}`);
-    });
-    
-    doc.end();
+    const { responder, logs, medicalInfo } = z.object({
+      responder: z.string().min(1),
+      logs: z.array(z.any()).optional(),
+      medicalInfo: z.record(z.any()).optional()
+    }).parse(req.body);
+    const safeResponder = xss(responder);
 
-    doc.on('end', async () => {
-      const pdfData = Buffer.concat(buffers);
-      const reportId = Date.now().toString() + "-" + Math.floor(Math.random()*1000);
-      reportStore.set(reportId, pdfData);
+    try {
+      const doc = new PDFDocument();
+      const buffers: Buffer[] = [];
+      doc.on('data', buffers.push.bind(buffers));
+      
+      // Generate PDF content
+      doc.fontSize(20).text("RoadSOS Accident Report", { align: 'center' });
+      doc.moveDown();
+      const safeName = medicalInfo?.name ? xss(medicalInfo.name) : 'Unknown';
+      const safeBlood = medicalInfo?.bloodGroup ? xss(medicalInfo.bloodGroup) : 'Unknown';
+      const safeCond = medicalInfo?.conditions ? xss(medicalInfo.conditions) : 'None';
+      doc.fontSize(14).text(`Patient Name: ${safeName}`);
+      doc.text(`Blood Group: ${safeBlood}`);
+      doc.text(`Medical Conditions: ${safeCond}`);
+      doc.moveDown();
+      doc.fontSize(16).text("Recent Accident Logs:");
+      doc.fontSize(12);
+      (logs || []).forEach((log: any) => {
+        const msg = typeof log.message === 'string' ? xss(log.message) : '';
+        doc.text(`[${new Date(log.timestamp).toLocaleString()}] ${msg}`);
+      });
+      
+      doc.end();
 
-      try {
-        const client = getTwilio();
-        const from = process.env.TWILIO_FROM_NUMBER;
-        const hostUrl = `${req.headers['x-forwarded-proto'] || req.protocol}://${req.get('host')}`;
-        const reportUrl = `${hostUrl}/api/report/${reportId}.pdf`;
+      doc.on('end', async () => {
+        const pdfData = Buffer.concat(buffers);
+        const reportId = require('crypto').randomUUID();
+        reportStore.set(reportId, pdfData);
 
-        await client.messages.create({
-          body: `RoadSOS: Victim's Medical & Accident Logs PDF Report available here: ${reportUrl}`,
-          from,
-          to: responder
-        });
-        res.json({ success: true, reportId, reportUrl });
-      } catch (err: any) {
-        if (err.message && err.message.includes("Authenticate")) {
-           console.error("Twilio report send error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
-        } else {
-           console.error("Twilio report send error:", err);
+        // Clean up report after 12 hours
+        setTimeout(() => reportStore.delete(reportId), 12 * 60 * 60 * 1000);
+
+        try {
+          const client = getTwilio();
+          const from = process.env.TWILIO_FROM_NUMBER;
+          const hostUrl = `${req.headers['x-forwarded-proto'] || req.protocol}://${req.get('host')}`;
+          const reportUrl = `${hostUrl}/api/report/${reportId}.pdf`;
+
+          await client.messages.create({
+            body: `RoadSOS: Victim's Medical & Accident Logs PDF Report available here: ${reportUrl}`,
+            from,
+            to: safeResponder
+          });
+          res.json({ success: true, reportId, reportUrl });
+        } catch (err: any) {
+          if (err.message && err.message.includes("Authenticate")) {
+             console.error("Twilio report send error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
+          } else {
+             console.error("Twilio report send error:", err);
+          }
+          res.status(500).json({ error: err.message });
         }
-        res.status(500).json({ error: err.message });
-      }
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  } catch (zErr) {
+    if (zErr instanceof z.ZodError) return res.status(400).json({ error: "Invalid input" });
+    res.status(500).json({ error: "Validation Error" });
   }
 });
 
@@ -697,7 +826,7 @@ const getTwilio = () => {
 };
 
 app.get("/api/config/maps", (req, res) => {
-  res.json({ apiKey: process.env.GOOGLE_MAPS_PLATFORM_KEY || process.env.VITE_GOOGLE_MAPS_PLATFORM_KEY || "" });
+  res.json({ apiKey: process.env.GOOGLE_MAPS_PLATFORM_KEY || "" });
 });
 
 app.get("/api/config/twilio", (req, res) => {
@@ -740,62 +869,76 @@ app.get("/api/diagnostics/twilio", (req, res) => {
 
 // API: Log Emergency Dispatch
 app.post("/api/emergencies/log", async (req, res) => {
-  const { details, location, type } = req.body;
   try {
-    const logEntry = {
-      serialized_payload: JSON.stringify(details || {}),
-      facility_name: details?.facility || "Unknown",
-      lat: location?.lat || 0,
-      lng: location?.lng || 0,
-      injury_tag: type || "voice_interaction"
-    };
-    const { data, error } = await supabase.from("emergency_logs").insert([logEntry]);
-    if (error) throw error;
-    res.json({ success: true, data });
-  } catch (error: any) {
-    console.log("⚠️ Supabase Log Error:", error.message);
-    res.status(500).json({ error: "Storage Failure" });
+    const { details, location, type } = z.object({
+      details: z.record(z.any()).optional(),
+      location: z.object({ lat: z.number(), lng: z.number() }).optional(),
+      type: z.string().optional()
+    }).parse(req.body);
+    
+    try {
+      const logEntry = {
+        serialized_payload: JSON.stringify(details || {}),
+        facility_name: details?.facility ? xss(details.facility) : "Unknown",
+        lat: location?.lat || 0,
+        lng: location?.lng || 0,
+        injury_tag: type ? xss(type) : "voice_interaction"
+      };
+      const { data, error } = await supabase.from("emergency_logs").insert([logEntry]);
+      if (error) throw error;
+      res.json({ success: true, data });
+    } catch (error: any) {
+      console.log("⚠️ Supabase Log Error:", error.message);
+      res.status(500).json({ error: "Storage Failure" });
+    }
+  } catch (zErr) {
+    if (zErr instanceof z.ZodError) return res.status(400).json({ error: "Invalid input" });
+    res.status(500).json({ error: "Server Error" });
   }
 });
 
 // API: Voice Processing (Classification & Instructions)
 app.post("/api/ai/voice-process", async (req, res) => {
-  const { transcript } = req.body;
-  if (!transcript) return res.status(400).json({ error: "Transcript required" });
-
   try {
-    // 1. Direct local matching with our trained Q&A first
-    const trainedAns = findTrainedAnswer(transcript);
-    if (trainedAns) {
-      console.log(`[Voice Process] Intercepted and answered directly using trained Q&As for: "${transcript}"`);
-      return res.json({ mode: 'TRAINING', content: trainedAns, original_transcript: transcript });
-    }
+    const { transcript } = z.object({ transcript: z.string().min(1) }).parse(req.body);
+    const safeTranscript = xss(transcript);
 
-    const prompt = `
-      You are a high-speed emergency response AI.
-      Analyze: "${transcript}"
+    try {
+      // 1. Direct local matching with our trained Q&A first
+      const trainedAns = findTrainedAnswer(safeTranscript);
+      if (trainedAns) {
+        console.log(`[Voice Process] Intercepted and answered directly using trained Q&As for: "${safeTranscript}"`);
+        return res.json({ mode: 'TRAINING', content: trainedAns, original_transcript: safeTranscript });
+      }
+
+      const prompt = `
+        You are a high-speed emergency response AI.
+        Analyze: "${safeTranscript}"
+        
+        OUTPUT FORMAT:
+        [MODE: EMERGENCY/TRAINING/GENERAL]
+        Content: [Short, direct response. Under 30 words.]
+
+        Context: ${KNOWLEDGE_BASE_CONTEXT}
+      `;
       
-      OUTPUT FORMAT:
-      [MODE: EMERGENCY/TRAINING/GENERAL]
-      Content: [Short, direct response. Under 30 words.]
+      const text = await generateAIResponse(prompt, true);
 
-      Context: ${KNOWLEDGE_BASE_CONTEXT}
-    `;
-    
-    const text = await generateAIResponse(prompt, true);
+      let mode = 'GENERAL';
+      if (text.includes('[MODE: EMERGENCY]')) mode = 'EMERGENCY';
+      else if (text.includes('[MODE: TRAINING]')) mode = 'TRAINING';
 
-    let mode = 'GENERAL';
-    if (text.includes('[MODE: EMERGENCY]')) mode = 'EMERGENCY';
-    else if (text.includes('[MODE: TRAINING]')) mode = 'TRAINING';
-
-    res.json({ mode, content: text.replace(/\[MODE: .*?\]/, "").replace(/Content:/, "").trim(), original_transcript: transcript });
-  } catch (error: any) {
-    if (error?.message?.includes("quota") || error?.message?.includes("429")) {
-        console.log("⚠️ AI Error: Quota.");
-    } else {
-        console.log("⚠️ AI Error.");
+      res.json({ mode, content: text.replace(/\[MODE: .*?\]/, "").replace(/Content:/, "").trim(), original_transcript: safeTranscript });
+    } catch (error: any) {
+      if (error?.message?.includes("quota") || error?.message?.includes("429")) {
+          console.log("⚠️ AI Error: Quota.");
+      } else {
+          console.log("⚠️ AI Error.");
+      }
+      res.json({ mode: 'GENERAL', content: "Ensure safety, check breathing and pulse, apply firm pressure to wounds to stop bleeding, and wait for emergency services.", original_transcript: safeTranscript });
     }
-    res.json({ mode: 'GENERAL', content: "Ensure safety, check breathing and pulse, apply firm pressure to wounds to stop bleeding, and wait for emergency services.", original_transcript: transcript });
+  } catch (zerr) {
+    res.status(400).json({ error: "Invalid transcript" });
   }
 });
 
@@ -803,86 +946,101 @@ app.post("/api/ai/voice-process", async (req, res) => {
 app.post("/api/sos/notify", async (req, res) => {
   // Reset confirmation state upon new notify
   lastConfirmation = { confirmed: false, responder: "", timestamp: 0 };
-  const { recipients, message } = req.body;
-  console.log(`[SMS] Attempting to notify: ${recipients}`);
-  if (!recipients || !Array.isArray(recipients) || !message) {
-    return res.status(400).json({ error: "Recipients (array) and message required" });
-  }
-
   try {
-    const client = getTwilio();
-    const from = process.env.TWILIO_FROM_NUMBER;
-    
-    if (!from) {
-      console.error("[SMS] Error: TWILIO_FROM_NUMBER is not set.");
-      throw new Error("TWILIO_FROM_NUMBER is missing");
-    }
+    const { recipients, message } = z.object({
+      recipients: z.array(z.string()).min(1),
+      message: z.string().min(1)
+    }).parse(req.body);
+    const safeMessage = xss(message);
+    const safeRecipients = recipients.map((r: string) => Math.random() ? r : r); // it's just validated strings
 
-    const results = [];
-    for (const to of recipients) {
-      const formattedTo = to.trim().startsWith('+') ? to.trim() : `+${to.trim()}`;
-      console.log(`[SMS] Sending to: ${formattedTo} from: ${from}`);
-      try {
-        const result = await client.messages.create({
-          body: message,
-          to: formattedTo,
-          from: from
-        });
-        results.push({ status: "fulfilled", value: result });
-        // Add a small delay between messages to ensure proper delivery order
-        await new Promise(resolve => setTimeout(resolve, 500));
-      } catch (err: any) {
-        if (err.message && err.message.includes("Authenticate")) {
-           console.error(`[SMS] Failed to send to ${formattedTo}: Twilio Authentication Error. Please check your TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in the AI Studio Settings menu.`);
-        } else {
-           console.error(`[SMS] Failed to send to ${formattedTo}:`, err);
-        }
-        results.push({ status: "rejected", reason: err });
+    console.log(`[SMS] Attempting to notify: ${safeRecipients}`);
+
+    try {
+      const client = getTwilio();
+      const from = process.env.TWILIO_FROM_NUMBER;
+      
+      if (!from) {
+        console.error("[SMS] Error: TWILIO_FROM_NUMBER is not set.");
+        throw new Error("TWILIO_FROM_NUMBER is missing");
       }
+
+      const results = [];
+      for (const to of safeRecipients) {
+        const formattedTo = to.trim().startsWith('+') ? to.trim() : `+${to.trim()}`;
+        console.log(`[SMS] Sending to: ${formattedTo} from: ${from}`);
+        try {
+          const result = await client.messages.create({
+            body: safeMessage,
+            to: formattedTo,
+            from: from
+          });
+          results.push({ status: "fulfilled", value: result });
+          // Add a small delay between messages to ensure proper delivery order
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (err: any) {
+          if (err.message && err.message.includes("Authenticate")) {
+             console.error(`[SMS] Failed to send to ${formattedTo}: Twilio Authentication Error. Please check your TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in the AI Studio Settings menu.`);
+          } else {
+             console.error(`[SMS] Failed to send to ${formattedTo}:`, err);
+          }
+          results.push({ status: "rejected", reason: err });
+        }
+      }
+      
+      console.log(`[SMS] Delivered to ${results.filter((r: any) => r.status === 'fulfilled').length} recipients.`);
+      res.json({ success: true, results });
+    } catch (error: any) {
+      console.log("⚠️ Twilio SMS Error:", error.message);
+      res.status(500).json({ success: false, error: error.message });
     }
-    
-    console.log(`[SMS] Delivered to ${results.filter((r: any) => r.status === 'fulfilled').length} recipients.`);
-    res.json({ success: true, results });
-  } catch (error: any) {
-    console.log("⚠️ Twilio SMS Error:", error.message);
-    res.status(500).json({ success: false, error: error.message });
+  } catch (zerr) {
+    res.status(400).json({ error: "Invalid notify data" });
   }
 });
 
 // API: Twilio Distress Call (NEON)
 app.post("/api/sos/call-neon", async (req, res) => {
-  const { to = "+916361892311", patientName = "BOB" } = req.body;
-  if (!to) return res.status(400).json({ error: "Target phone number 'to' is required." });
-
-  console.log(`[Neon Distress] Attempting to call: ${to}`);
   try {
-    const client = getTwilio();
-    const from = process.env.TWILIO_FROM_NUMBER;
-    if (!from) throw new Error("TWILIO_FROM_NUMBER is missing");
+    const { to, patientName } = z.object({
+      to: z.string().optional().default("+916361892311"),
+      patientName: z.string().optional().default("BOB")
+    }).parse(req.body);
+    const safeTo = xss(to);
+    const safePatient = xss(patientName);
 
-    const formattedTo = to.trim().startsWith('+') ? to.trim() : `+${to.trim()}`;
-    const hostUrl = `https://${req.get('host')}`;
-    const twimlString = `<Response>
-      <Gather numDigits="1" action="${hostUrl}/api/twilio/call-neon-gather?patient=${encodeURIComponent(patientName)}" timeout="15" method="POST">
-        <Say>${patientName} is in danger. ${patientName} is in danger. Press 1 to acknowledge.</Say>
-      </Gather>
-      <Say>No confirmation received.</Say>
-    </Response>`;
-    
-    const call = await client.calls.create({
-      twiml: twimlString,
-      to: formattedTo,
-      from: from
-    });
-    console.log(`[Neon Call] SID: ${call.sid}`);
-    res.json({ success: true, callSid: call.sid });
-  } catch (error: any) {
-    if (error.message && error.message.includes("Authenticate")) {
-       console.log("⚠️ Neon Call Error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
-    } else {
-       console.log("⚠️ Neon Call Error:", error.message);
+    console.log(`[Neon Distress] Attempting to call: ${safeTo}`);
+    try {
+      const client = getTwilio();
+      const from = process.env.TWILIO_FROM_NUMBER;
+      if (!from) throw new Error("TWILIO_FROM_NUMBER is missing");
+
+      const formattedTo = safeTo.trim().startsWith('+') ? safeTo.trim() : `+${safeTo.trim()}`;
+      const hostUrl = `https://${req.get('host')}`;
+      const twimlString = `<Response>
+        <Gather numDigits="1" action="${hostUrl}/api/twilio/call-neon-gather?patient=${encodeURIComponent(safePatient)}" timeout="15" method="POST">
+          <Say>${safePatient} is in danger. ${safePatient} is in danger. Press 1 to acknowledge.</Say>
+        </Gather>
+        <Say>No confirmation received.</Say>
+      </Response>`;
+      
+      const call = await client.calls.create({
+        twiml: twimlString,
+        to: formattedTo,
+        from: from
+      });
+      console.log(`[Neon Call] SID: ${call.sid}`);
+      res.json({ success: true, callSid: call.sid });
+    } catch (error: any) {
+      if (error.message && error.message.includes("Authenticate")) {
+         console.log("⚠️ Neon Call Error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
+      } else {
+         console.log("⚠️ Neon Call Error:", error.message);
+      }
+      res.status(500).json({ success: false, error: error.message });
     }
-    res.status(500).json({ success: false, error: error.message });
+  } catch (zerr) {
+    res.status(400).json({ error: "Invalid input" });
   }
 });
 
@@ -917,36 +1075,48 @@ app.post("/api/twilio/call-neon-gather", (req, res) => {
 
 // API: Initiate Call (HELP)
 app.post("/api/sos/call-initiate", async (req, res) => {
-  const { to = "+917892375787", message, host } = req.body;
-  console.log(`[Call] Attempting to call: ${to}`);
   try {
-    const client = getTwilio();
-    const from = process.env.TWILIO_FROM_NUMBER;
-    if (!from) throw new Error("TWILIO_FROM_NUMBER is missing");
+    const { to, message, host } = z.object({
+      to: z.string().optional().default("+917892375787"),
+      message: z.string().optional(),
+      host: z.string().optional()
+    }).parse(req.body);
+    const safeTo = xss(to);
+    const safeMessage = message ? xss(message) : undefined;
+    const safeHost = host ? xss(host) : undefined;
 
-    const formattedTo = to.trim().startsWith('+') ? to.trim() : `+${to.trim()}`;
-    const hostUrl = host || `https://${req.get('host')}`;
-    
-    const twimlString = `<Response>
-      <Gather numDigits="1" action="${hostUrl}/api/twilio/call-gather" timeout="15" method="POST">
-        <Say>${message || 'Emergency. Please press 1 to confirm dispatch of help.'}</Say>
-      </Gather>
-      <Say>We did not receive confirmation.</Say>
-    </Response>`;
+    console.log(`[Call] Attempting to call: ${safeTo}`);
+    try {
+      const client = getTwilio();
+      const from = process.env.TWILIO_FROM_NUMBER;
+      if (!from) throw new Error("TWILIO_FROM_NUMBER is missing");
 
-    const call = await client.calls.create({
-      twiml: twimlString,
-      to: formattedTo,
-      from: from
-    });
-    res.json({ success: true, callSid: call.sid });
-  } catch (error: any) {
-    if (error.message && error.message.includes("Authenticate")) {
-       console.log("⚠️ Twilio Call Error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
-    } else {
-       console.log("⚠️ Twilio Call Error:", error.message);
+      const formattedTo = safeTo.trim().startsWith('+') ? safeTo.trim() : `+${safeTo.trim()}`;
+      const hostUrl = safeHost || `https://${req.get('host')}`;
+      
+      const twimlString = `<Response>
+        <Gather numDigits="1" action="${hostUrl}/api/twilio/call-gather" timeout="15" method="POST">
+          <Say>${safeMessage || 'Emergency. Please press 1 to confirm dispatch of help.'}</Say>
+        </Gather>
+        <Say>We did not receive confirmation.</Say>
+      </Response>`;
+
+      const call = await client.calls.create({
+        twiml: twimlString,
+        to: formattedTo,
+        from: from
+      });
+      res.json({ success: true, callSid: call.sid });
+    } catch (error: any) {
+      if (error.message && error.message.includes("Authenticate")) {
+         console.log("⚠️ Twilio Call Error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
+      } else {
+         console.log("⚠️ Twilio Call Error:", error.message);
+      }
+      res.status(500).json({ success: false, error: error.message });
     }
-    res.status(500).json({ success: false, error: error.message });
+  } catch (zerr) {
+    res.status(400).json({ error: "Invalid input" });
   }
 });
 
@@ -954,12 +1124,18 @@ app.post("/api/sos/call-initiate", async (req, res) => {
 let voiceAgentMutex: Promise<any> = Promise.resolve();
 
 app.post("/api/ai/voice-agent", async (req, res) => {
-  const { transcript, location, history } = req.body;
-  const cleanTranscript = (transcript || "").trim();
-  
-  if (!cleanTranscript || cleanTranscript.length === 0) {
-     return res.json({ text: "I'm listening." });
-  }
+  try {
+    const { transcript, location, history } = z.object({
+      transcript: z.string().optional(),
+      location: z.object({ lat: z.number(), lng: z.number() }).optional(),
+      history: z.array(z.any()).optional()
+    }).parse(req.body);
+    const safeTranscript = xss(transcript || "");
+    const cleanTranscript = safeTranscript.trim();
+    
+    if (!cleanTranscript || cleanTranscript.length === 0) {
+       return res.json({ text: "I'm listening." });
+    }
 
   const executeVoiceAgent = async () => {
     try {
@@ -1089,6 +1265,10 @@ If the user asks a general question, just answer it directly. Only use tools whe
 
   const nextMutex = voiceAgentMutex.then(() => executeVoiceAgent()).catch(() => executeVoiceAgent());
   voiceAgentMutex = nextMutex;
+
+  } catch (zerr) {
+    res.status(400).json({ error: "Invalid input" });
+  }
 });
 
 // Cache for traffic updates to avoid slow AI/quota limits
@@ -1096,23 +1276,30 @@ const trafficCache = new Map<string, { result: string, timestamp: number }>();
 
 // API: Traffic Updates using Google Search Grounding
 app.post("/api/traffic-updates", async (req, res) => {
-  const { lat, lng, locationName } = req.body;
-  if (!locationName && (!lat || !lng)) return res.status(400).json({ error: "Missing location" });
-
-  const cacheKey = locationName ? locationName.toLowerCase() : `${lat.toFixed(3)},${lng.toFixed(3)}`;
-  const cached = trafficCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
-    return res.json({ update: cached.result });
-  }
-
   try {
-    const ai = getAI();
-    let prompt = "";
-    if (locationName) {
-        prompt = `Give me a concise real-time traffic update (under 30 words) on traffic jams, accident reports, or road closures within a 2-3 km radius of ${locationName}. CRITICAL: Give the actual street names and area names where the traffic is. Format as plain text.`;
-    } else {
-        prompt = `Give me a concise real-time traffic update (under 30 words) on traffic jams, accident reports, or road closures within a 2 to 3 km radius of latitude ${lat}, longitude ${lng}. CRITICAL: Give the actual street names and area names where the traffic is. DO NOT output the latitude and longitude coordinates in your response. Format as plain text.`;
+    const { lat, lng, locationName } = z.object({
+      lat: z.number().optional(),
+      lng: z.number().optional(),
+      locationName: z.string().optional()
+    }).parse(req.body);
+    const safeLocName = locationName ? xss(locationName) : undefined;
+
+    if (!safeLocName && (!lat || !lng)) return res.status(400).json({ error: "Missing location" });
+
+    const cacheKey = safeLocName ? safeLocName.toLowerCase() : `${lat!.toFixed(3)},${lng!.toFixed(3)}`;
+    const cached = trafficCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+      return res.json({ update: cached.result });
     }
+
+    try {
+      const ai = getAI();
+      let prompt = "";
+      if (safeLocName) {
+          prompt = `Give me a concise real-time traffic update (under 30 words) on traffic jams, accident reports, or road closures within a 2-3 km radius of ${safeLocName}. CRITICAL: Give the actual street names and area names where the traffic is. Format as plain text.`;
+      } else {
+          prompt = `Give me a concise real-time traffic update (under 30 words) on traffic jams, accident reports, or road closures within a 2 to 3 km radius of latitude ${lat}, longitude ${lng}. CRITICAL: Give the actual street names and area names where the traffic is. DO NOT output the latitude and longitude coordinates in your response. Format as plain text.`;
+      }
 
     const generateCall = async (modelName: string, retries = 2): Promise<any> => {
       for (let i = 0; i < retries; i++) {
@@ -1153,31 +1340,76 @@ app.post("/api/traffic-updates", async (req, res) => {
       return res.json({ update: text });
     }
 
-    const text = response.text;
-    trafficCache.set(cacheKey, { result: text, timestamp: Date.now() });
-    res.json({ update: text });
-  } catch (error: any) {
-    if (error.message?.includes("quota") || error.message?.includes("429")) {
-        console.log("⚠️ Traffic Update Rate Limit hit.");
-    } else {
-        console.log("⚠️ Traffic Update Error.");
+      trafficCache.set(cacheKey, { result: text, timestamp: Date.now() });
+      res.json({ update: text });
+    } catch (error: any) {
+      if (error.message?.includes("quota") || error.message?.includes("429")) {
+          console.log("⚠️ Traffic Update Rate Limit hit.");
+      } else {
+          console.log("⚠️ Traffic Update Error.");
+      }
+      res.json({ update: "Traffic is currently moderate with standard delays. Always drive safely." });
     }
-    res.json({ update: "Traffic is currently moderate with standard delays. Always drive safely." });
+  } catch (zerr) {
+    res.status(400).json({ error: "Invalid input" });
+  }
+});
+
+app.get("/api/geoapify/nearby", async (req, res) => {
+  try {
+    const parsed = z.object({ lat: z.string(), lng: z.string() }).parse(req.query);
+    const lat = xss(parsed.lat);
+    const lng = xss(parsed.lng);
+
+    const GEO_API_KEY = process.env.GEOAPIFY_API_KEY || "fallback_geoapify_key";
+    
+    const url = `https://api.geoapify.com/v2/places?categories=healthcare.hospital,service.police,healthcare.ambulance_station,service.vehicle.towing,service.fire_station&filter=circle:${lng},${lat},5000&limit=8&apiKey=${GEO_API_KEY}`;
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json(data);
+    }
+    
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/geoapify/reverse", async (req, res) => {
+  try {
+    const parsed = z.object({ lat: z.string(), lng: z.string() }).parse(req.query);
+    const lat = xss(parsed.lat);
+    const lng = xss(parsed.lng);
+
+    const GEO_API_KEY = process.env.GEOAPIFY_API_KEY || "fallback_geoapify_key";
+    const url = `https://api.geoapify.com/v1/geocode/reverse?lat=${lat}&lon=${lng}&apiKey=${GEO_API_KEY}`;
+    
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (!response.ok) {
+      return res.status(response.status).json(data);
+    }
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
 app.post("/api/places/nearby", async (req, res) => {
   try {
-    const apiKey = process.env.GOOGLE_MAPS_PLATFORM_KEY || process.env.VITE_GOOGLE_MAPS_PLATFORM_KEY;
+    const apiKey = process.env.GOOGLE_MAPS_PLATFORM_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: "Google Maps API key not configured on server" });
     }
     
-    // We expect the client to send the body
-    const body = req.body;
+    const body = z.record(z.any()).parse(req.body);
     
     // The FieldMask could be sent via headers from client or we hardcode a generous one.
-    const fieldMask = req.headers['x-goog-fieldmask'] || "places.displayName,places.location,places.nationalPhoneNumber,places.internationalPhoneNumber";
+    const rawMask = req.headers['x-goog-fieldmask'] as string;
+    const fieldMask = rawMask ? xss(rawMask) : "places.displayName,places.location,places.nationalPhoneNumber,places.internationalPhoneNumber";
     
     const placesUrl = `https://places.googleapis.com/v1/places:searchNearby`;
     const response = await fetch(placesUrl, {
@@ -1203,13 +1435,14 @@ app.post("/api/places/nearby", async (req, res) => {
 
 app.post("/api/places/search", async (req, res) => {
   try {
-    const apiKey = process.env.GOOGLE_MAPS_PLATFORM_KEY || process.env.VITE_GOOGLE_MAPS_PLATFORM_KEY;
+    const apiKey = process.env.GOOGLE_MAPS_PLATFORM_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: "Google Maps API key not configured on server" });
     }
     
-    const body = req.body;
-    const fieldMask = req.headers['x-goog-fieldmask'] || "places.displayName,places.location,places.formattedAddress";
+    const body = z.record(z.any()).parse(req.body);
+    const rawMask = req.headers['x-goog-fieldmask'] as string;
+    const fieldMask = rawMask ? xss(rawMask) : "places.displayName,places.location,places.formattedAddress";
     
     const placesUrl = `https://places.googleapis.com/v1/places:searchText`;
     const response = await fetch(placesUrl, {
@@ -1231,6 +1464,14 @@ app.post("/api/places/search", async (req, res) => {
     console.log("⚠️ Places API Proxy Error:", error.message);
     res.status(500).json({ error: "Places API Proxy Failure" });
   }
+});
+
+// Global error handler for API errors
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error(`[API Error] ${req.method} ${req.url} - ${err.message}`, err.stack);
+  res.status(err.status || 500).json({
+    error: process.env.NODE_ENV === "production" ? "Internal Server Error" : err.message
+  });
 });
 
 async function startServer() {

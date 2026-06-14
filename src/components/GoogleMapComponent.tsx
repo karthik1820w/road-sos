@@ -2,13 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { APIProvider, Map, AdvancedMarker, Pin, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 import { MapPin, Building2, Truck, Loader2, Navigation, Crosshair, Search, Phone, BedSingle, Share2, X, Info } from 'lucide-react';
 
-const API_KEY =
-  process.env.GOOGLE_MAPS_PLATFORM_KEY ||
-  (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY ||
-  (globalThis as any).GOOGLE_MAPS_PLATFORM_KEY ||
-  '';
-
-const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY' && !API_KEY.includes('your_');
+const hasValidKey = false; // default fallback value
 
 interface GoogleMapsViewProps {
   center: { lat: number; lng: number };
@@ -16,6 +10,7 @@ interface GoogleMapsViewProps {
   markers?: Array<{ lat: number; lng: number; title: string; color?: string }>;
   showTrafficLayer?: boolean;
   voiceMapQuery?: string;
+  hasValidKey?: boolean;
 }
 
 const classifyHospitalType = (hospitalName: string): 'GOVERNMENT' | 'PRIVATE' => {
@@ -34,7 +29,7 @@ const classifyHospitalType = (hospitalName: string): 'GOVERNMENT' | 'PRIVATE' =>
   return 'PRIVATE';
 };
 
-const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers = [], showTrafficLayer = false, voiceMapQuery }) => {
+const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers = [], showTrafficLayer = false, voiceMapQuery, hasValidKey: hasValidKeyProp }) => {
   const map = useMap();
   const routesLibrary = useMapsLibrary('routes');
   
@@ -75,14 +70,12 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
 
   useEffect(() => {
     const delayDebounceFn = setTimeout(async () => {
-      if (searchQuery.length > 2 && showSuggestions && API_KEY) {
+      if (searchQuery.length > 2 && showSuggestions) {
         try {
-          const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
+          const res = await fetch('/api/places/search', {
             method: 'POST',
             headers: {
-              'Content-Type': 'application/json',
-              'X-Goog-Api-Key': API_KEY,
-              'X-Goog-FieldMask': 'places.displayName,places.location,places.formattedAddress'
+              'Content-Type': 'application/json'
             },
             body: JSON.stringify({
               textQuery: searchQuery,
@@ -103,7 +96,7 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
     }, 400);
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchQuery, showSuggestions, center, API_KEY]);
+  }, [searchQuery, showSuggestions, center]);
 
   const handleSelectSuggestion = (p: any) => {
     if (p.location) {
@@ -206,7 +199,8 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
   const initialFetchDoneRef = useRef(false);
 
   useEffect(() => {
-    if (!hasValidKey) return;
+    const isKeyValid = hasValidKeyProp !== undefined ? hasValidKeyProp : hasValidKey;
+    if (!isKeyValid) return;
     let isMounted = true;
     
     const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
@@ -723,7 +717,8 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
 };
 
 export const GoogleMapComponent: React.FC<GoogleMapsViewProps> = (props) => {
-  if (!hasValidKey) {
+  const isKeyValid = props.hasValidKey !== undefined ? props.hasValidKey : hasValidKey;
+  if (!isKeyValid) {
     // Zero-dependency premium interactive map fallback using free standard Google maps embed engine
     const embedUrl = `https://maps.google.com/maps?q=${props.center.lat},${props.center.lng}&z=${props.zoom || 13}&output=embed`;
     return (
@@ -788,9 +783,7 @@ export const GoogleMapComponent: React.FC<GoogleMapsViewProps> = (props) => {
 
   return (
     <div className="w-full flex-grow relative">
-      <APIProvider apiKey={API_KEY} version="weekly">
-        <MapContent {...props} />
-      </APIProvider>
+      <MapContent {...props} />
     </div>
   );
 };

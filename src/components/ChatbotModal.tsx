@@ -14,166 +14,254 @@ class GeminiError extends Error {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-const GEMINI_CONFIG = {
-  apiKey: ((import.meta as any).env?.VITE_GEMINI_API_KEY || (window as any).GEMINI_API_KEY || '').trim(),
-  models: [
-    'gemini-1.5-flash',
-    'gemini-2.5-flash-lite',
-    'gemini-1.5-flash-8b',
-  ],
-  maxRetries: 3,
-  maxOutputTokens: 350,
-  temperature: 0.7,
+
+// Congestion profiles — derived from TomTom Traffic Index 2025
+const INDIA_CONGESTION: Record<string, Record<string, number>> = {
+  bengaluru  : { peak: 2.5, offPeak: 1.6, night: 1.1 },
+  bangalore  : { peak: 2.5, offPeak: 1.6, night: 1.1 },
+  pune       : { peak: 2.0, offPeak: 1.5, night: 1.1 },
+  mumbai     : { peak: 1.8, offPeak: 1.4, night: 1.1 },
+  delhi      : { peak: 1.7, offPeak: 1.4, night: 1.1 },
+  'new delhi': { peak: 1.7, offPeak: 1.4, night: 1.1 },
+  kolkata    : { peak: 1.7, offPeak: 1.4, night: 1.1 },
+  chennai    : { peak: 1.5, offPeak: 1.3, night: 1.1 },
+  hyderabad  : { peak: 1.6, offPeak: 1.3, night: 1.1 },
+  ahmedabad  : { peak: 1.4, offPeak: 1.2, night: 1.0 },
+  surat      : { peak: 1.3, offPeak: 1.2, night: 1.0 },
+  jaipur     : { peak: 1.3, offPeak: 1.2, night: 1.0 },
+  lucknow    : { peak: 1.3, offPeak: 1.2, night: 1.0 },
+  kochi      : { peak: 1.4, offPeak: 1.2, night: 1.0 },
+  coimbatore : { peak: 1.3, offPeak: 1.2, night: 1.0 },
+  nagpur     : { peak: 1.2, offPeak: 1.1, night: 1.0 },
+  indore     : { peak: 1.2, offPeak: 1.1, night: 1.0 },
+  udupi      : { peak: 1.2, offPeak: 1.1, night: 1.0 },
+  mangalore  : { peak: 1.2, offPeak: 1.1, night: 1.0 },
+  mysore     : { peak: 1.3, offPeak: 1.1, night: 1.0 },
+  mysuru     : { peak: 1.3, offPeak: 1.1, night: 1.0 },
+  default    : { peak: 1.3, offPeak: 1.2, night: 1.0 },
 };
 
-async function geocodeCity(placeName: string) {
-  try {
-     const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(placeName)}&count=1&language=en&format=json`);
-     const data = await res.json();
-     if (data.results && data.results.length > 0) {
-       return { display: data.results[0].name, lat: data.results[0].latitude, lng: data.results[0].longitude };
-     }
-  } catch (e) {
+function getTrafficPeriod() {
+  const now   = new Date();
+  const istMs = now.getTime() + (5.5 * 60 * 60 * 1000);
+  const ist   = new Date(istMs);
+  const h     = ist.getUTCHours();
+  if ((h >= 7 && h < 10) || (h >= 16 && h < 20)) return 'peak';
+  if (h >= 22 || h < 6) return 'night';
+  return 'offPeak';
+}
+
+function getCongestionMultiplier(cityName: string) {
+  const key    = (cityName || '').toLowerCase().trim();
+  const period = getTrafficPeriod();
+  for (const [city, factors] of Object.entries(INDIA_CONGESTION)) {
+    if (key.includes(city)) return { factor: factors[period], period };
   }
+  return {
+    factor: INDIA_CONGESTION.default[period],
+    period,
+  };
+}
+
+const PERIOD_LABELS: Record<string, string> = {
+  peak    : 'peak traffic hours',
+  offPeak : 'normal traffic',
+  night   : 'light night traffic',
+};
+
+async function geocodeDestinationPrecise(rawDestination: string, userCity: string = '') {
+  const cleaned = rawDestination
+    .replace(/^(go to|route to|navigate to|directions to|take me to|to|at|near)\s+/i, '')
+    .trim();
+  const searchQuery = userCity && !cleaned.toLowerCase().includes(userCity.toLowerCase())
+    ? `${cleaned} ${userCity} India`
+    : `${cleaned} India`;
+
+  let lat: number | null = null, lng: number | null = null, displayName: string | null = null, state: string | null = null;
   try {
-     const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(placeName)}&format=json&limit=1`);
-     const data = await res.json();
-     if (data && data.length > 0) {
-       return { display: data[0].display_name.split(',')[0], lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
-     }
-  } catch (e) {}
-  return null;
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=json&limit=3&addressdetails=1&accept-language=en&countrycodes=in`;
+    const results = await fetch(url, { headers: { 'Accept-Language': 'en', 'User-Agent': 'RoadSOSApp/1.0' } }).then(r => r.json());
+    if (results.length > 0) {
+      const best = results[0];
+      lat  = parseFloat(best.lat);
+      lng  = parseFloat(best.lon);
+      const addr = best.address || {};
+      state = addr.state || '';
+      const parts = [
+        addr.road || addr.pedestrian || addr.neighbourhood || null,
+        addr.suburb || addr.quarter || null,
+        addr.city || addr.town || addr.village || addr.county || null,
+        addr.state || null,
+      ].filter(Boolean);
+      displayName = parts.length >= 2
+        ? parts.slice(0, 3).join(', ')
+        : best.display_name?.split(',').slice(0, 3).join(',').trim();
+    }
+  } catch(e: any) {
+    console.warn('[Geocode] Nominatim failed:', e.message);
+  }
+
+  if (!lat || !lng) {
+    try {
+      const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cleaned)}&count=3&language=en&format=json`;
+      const data = await fetch(url).then(r => r.json());
+      if (data.results?.length) {
+        const india = data.results.find((r: any) => r.country_code === 'IN') || data.results[0];
+        lat         = india.latitude;
+        lng         = india.longitude;
+        state       = india.admin1 || '';
+        displayName = india.admin1 ? `${india.name}, ${india.admin1}` : india.name;
+      }
+    } catch(e: any) {
+      console.warn('[Geocode] Open-Meteo failed:', e.message);
+    }
+  }
+
+  if (!lat || !lng) return null;
+
+  let confirmedAddress = displayName;
+  try {
+    const revUrl = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=17&addressdetails=1`;
+    const rev  = await fetch(revUrl, { headers: { 'Accept-Language': 'en' } }).then(r => r.json());
+    const a = rev.address || {};
+    const streetAddr = [
+      a.house_number ? `${a.house_number} ${a.road || ''}`.trim() : (a.road || null),
+      a.suburb || a.neighbourhood || a.quarter || null,
+      a.city || a.town || a.village || null,
+    ].filter(Boolean).join(', ');
+
+    if (streetAddr.length > 5) {
+      confirmedAddress = streetAddr;
+      state = a.state || state;
+    }
+  } catch(e) {}
+
+  return {
+    lat, lng, displayName: cleaned, fullAddress: confirmedAddress, state, searchQuery,
+  };
+}
+
+async function fetchPrecisionRoute(oLat: number, oLng: number, dLat: number, dLng: number, destCity: string = '') {
+  const coords = `${oLng},${oLat};${dLng},${dLat}`;
+  const params = 'steps=true&alternatives=true&overview=simplified&geometries=geojson&annotations=false';
+  let osrmData: any = null;
+  for (const base of OSRM_ENDPOINTS) {
+    try {
+      const ctrl    = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 8000);
+      const res     = await fetch(`${base}/route/v1/driving/${coords}?${params}`, { signal: ctrl.signal });
+      clearTimeout(timeout);
+      const data    = await res.json();
+      if (data.code === 'Ok' && data.routes?.length) {
+        osrmData = data;
+        break;
+      }
+    } catch(e: any) {
+      console.warn('[Route] Endpoint failed:', base, e.message);
+    }
+  }
+
+  if (!osrmData) throw new Error('ROUTE_UNAVAILABLE');
+
+  const { factor, period } = getCongestionMultiplier(destCity);
+
+  const routes = (osrmData.routes || []).slice(0, 3).map((route: any, idx: number) => {
+    const rawDurSec  = route.duration;
+    const rawDistM   = route.distance;
+    const corrDurSec = Math.round(rawDurSec * factor);
+    const corrDurMin  = Math.ceil(corrDurSec / 60);
+    const corrDurText = corrDurMin < 60 ? `${corrDurMin} min` : `${Math.floor(corrDurMin/60)} hr ${corrDurMin%60} min`;
+    const distKm    = rawDistM / 1000;
+    const distText  = distKm < 1 ? `${Math.round(rawDistM)} metres` : (distKm < 10 ? `${distKm.toFixed(1)} km` : `${Math.round(distKm)} km`);
+
+    const steps: any[] = [];
+    for (const leg of (route.legs || [])) {
+      for (const step of (leg.steps || [])) {
+        const m    = step.maneuver || {};
+        const type = m.type     || 'notification';
+        const mod  = m.modifier || '';
+        const dist = step.distance || 0;
+        if (dist < 30 && !['depart','arrive'].includes(type)) continue;
+        steps.push({
+          instruction : buildStepText(type, mod, step.name, dist),
+          road        : step.name || '',
+          distance    : dist < 1000 ? `${Math.round(dist)} m` : `${(dist/1000).toFixed(1)} km`,
+          distM       : dist,
+          type,
+        });
+      }
+    }
+
+    const majorRoads: string[] = [];
+    const seen = new Set();
+    for (const s of steps) {
+      if (s.road && s.distM > 500 && !seen.has(s.road)) {
+        majorRoads.push(s.road);
+        seen.add(s.road);
+        if (majorRoads.length >= 5) break;
+      }
+    }
+
+    return {
+      index        : idx,
+      label        : ['Fastest Route','Alternate Route','Third Option'][idx] || 'Route',
+      rawDurSec,
+      rawDurMin    : Math.ceil(rawDurSec / 60),
+      corrDurSec,
+      corrDurMin,
+      corrDurText,
+      distText,
+      distKm       : distKm.toFixed(1),
+      factor,
+      period,
+      periodLabel  : PERIOD_LABELS[period],
+      steps        : steps.slice(0, 15),
+      majorRoads,
+      geometry     : route.geometry,
+    };
+  });
+  routes.sort((a: any, b: any) => a.corrDurSec - b.corrDurSec);
+  return { routes, factor, period };
+}
+
+function buildStepText(type: string, modifier: string, road: string, distM: number) {
+  const ICONS: any = { depart: '🚦', arrive: '📍', turn: '↩️', merge: '🔀', 'on ramp': '🛣️', 'off ramp': '🛣️', fork: '⑂', roundabout: '🔵', rotary: '🔵', 'new name': '⬆️', notification: '⬆️', 'end of road': '↩️' };
+  const TURN_ICONS: any = { left: '⬅️', right: '➡️', 'slight left': '↖️', 'slight right': '↗️', 'sharp left': '↰', 'sharp right': '↱', straight: '⬆️', uturn: '🔄' };
+  if (type === 'depart')  return `🚦 Head out`;
+  if (type === 'arrive')  return `📍 Arrive at destination`;
+  const icon = (modifier && TURN_ICONS[modifier]) || ICONS[type] || '⬆️';
+  const dir  = modifier ? modifier.replace('slight ', 'slightly ').replace('sharp ', 'sharply ') : '';
+  const action = type === 'turn' ? `Turn ${dir}` : type === 'roundabout' ? `Enter roundabout, take ${dir} exit` : type === 'rotary' ? `Enter rotary` : type === 'fork' ? `Keep ${dir} at fork` : type === 'merge' ? `Merge ${dir}` : type === 'on ramp' ? `Take ${dir} ramp onto` : type === 'off ramp' ? `Exit ${dir} onto` : type === 'end of road' ? `Turn ${dir} at end of road` : type === 'new name' ? `Continue onto` : `Continue`;
+  return `${icon} ${action}${road ? ' ' + road : ''}`;
+}
+
+async function handleNavigationQueryV2(destinationText: string, userLat: number, userLng: number, userCity: string = '') {
+  if (!userLat || !userLng) {
+    return { error: true, voice: 'I need your location to give you directions. Enable GPS first.' };
+  }
+  const dest = await geocodeDestinationPrecise(destinationText, userCity);
+  if (!dest) {
+    return { error: true, voice: `I couldn't find ${destinationText} on the map. Say the full name, like Malleswaram Bengaluru or Koramangala 5th Block.` };
+  }
+  const confirmMsg = `I'll take you to ${dest.fullAddress}.`;
+  let routeResult: any;
+  try {
+    routeResult = await fetchPrecisionRoute(userLat, userLng, dest.lat, dest.lng, dest.fullAddress || '');
+  } catch(e) {
+    return { error: true, voice: `I found ${dest.fullAddress} but couldn't calculate a driving route. Please try again.` };
+  }
+  const best = routeResult.routes[0];
+  const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${userLat},${userLng}&destination=${dest.lat},${dest.lng}&travelmode=driving`;
+  (window as any)._lastRoute = {
+    destination: destinationText, fullAddress: dest.fullAddress, destLat: dest.lat, destLng: dest.lng, routes: routeResult.routes, congestion: { factor: routeResult.factor, period: routeResult.period }, mapsUrl, fetchedAt: new Date().toLocaleTimeString(), userCity,
+  };
+  return { error: false, confirmMsg, dest, routes: routeResult.routes, best, mapsUrl, factor: routeResult.factor, period: routeResult.period };
 }
 
 const OSRM_ENDPOINTS = [
   'https://router.project-osrm.org',
   'https://routing.openstreetmap.de/routed-car',
 ];
-
-async function fetchRoute(originLat: number, originLng: number, destLat: number, destLng: number) {
-  const coords = `${originLng},${originLat};${destLng},${destLat}`;
-  const params = [
-    'steps=true',
-    'alternatives=true',
-    'overview=simplified',
-    'geometries=geojson',
-    'annotations=false',
-  ].join('&');
-
-  for (const base of OSRM_ENDPOINTS) {
-    try {
-      const url = `${base}/route/v1/driving/${coords}?${params}`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 7000);
-      const res  = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data.code !== 'Ok' || !data.routes?.length) {
-        console.warn('[Route] OSRM returned:', data.code, 'from', base);
-        continue;
-      }
-      return data;
-    } catch(e: any) {
-      console.warn('[Route] Endpoint failed:', base, e.message);
-    }
-  }
-  throw new Error('ROUTE_UNAVAILABLE');
-}
-
-function maneuverToText(type: string, modifier: string) {
-  const MANEUVER_MAP: Record<string, string> = {
-    'depart'           : '🚦 Start',
-    'arrive'           : '🏁 Arrive at destination',
-    'turn-left'        : '⬅️  Turn left',
-    'turn-right'       : '➡️  Turn right',
-    'turn-slight left' : '↖️  Bear left',
-    'turn-slight right': '↗️  Bear right',
-    'turn-sharp left'  : '⬅️  Sharp left',
-    'turn-sharp right' : '➡️  Sharp right',
-    'turn-straight'    : '⬆️  Continue straight',
-    'turn-uturn'       : '🔄 Make a U-turn',
-    'merge-left'       : '↙️  Merge left',
-    'merge-right'      : '↘️  Merge right',
-    'on ramp-left'     : '🛣️  Take left ramp',
-    'on ramp-right'    : '🛣️  Take right ramp',
-    'off ramp-left'    : '🛣️  Exit left',
-    'off ramp-right'   : '🛣️  Exit right',
-    'fork-left'        : '↙️  Keep left at fork',
-    'fork-right'       : '↘️  Keep right at fork',
-    'roundabout'       : '🔵 Enter roundabout',
-    'rotary'           : '🔵 Enter rotary',
-    'new name'         : '⬆️  Continue on',
-    'notification'     : '⬆️  Continue on',
-    'end of road-left' : '⬅️  Turn left at end of road',
-    'end of road-right': '➡️  Turn right at end of road',
-  };
-  const key = modifier ? `${type}-${modifier}` : type;
-  return MANEUVER_MAP[key] || MANEUVER_MAP[type] || `⬆️  ${type.replace(/_/g,' ')}`;
-}
-
-function formatDistance(metres: number) {
-  if (metres < 100) return `${Math.round(metres)} m`;
-  if (metres < 1000) return `${Math.round(metres / 10) * 10} m`;
-  if (metres < 10000) return `${(metres / 1000).toFixed(1)} km`;
-  return `${Math.round(metres / 1000)} km`;
-}
-
-function formatDuration(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 0) return `${h} hr ${m} min`;
-  if (m === 0) return 'less than a minute';
-  return `${m} min`;
-}
-
-function parseRoutes(osrmData: any, destName: string) {
-  const routes = (osrmData.routes || []).slice(0, 3);
-  return routes.map((route: any, idx: number) => {
-    const totalDist = route.distance;
-    const totalDur  = route.duration;
-    const legs      = route.legs || [];
-    const steps = [];
-    for (const leg of legs) {
-      for (const step of (leg.steps || [])) {
-        const m    = step.maneuver || {};
-        const type = m.type || 'notification';
-        const mod  = m.modifier || '';
-        const name = step.name || '';
-        const dist = step.distance || 0;
-        if (dist < 20 && !['depart','arrive'].includes(type)) continue;
-        steps.push({
-          instruction : maneuverToText(type, mod),
-          road        : name,
-          distance    : formatDistance(dist),
-          distMetres  : dist,
-          type, mod,
-        });
-      }
-    }
-    const majorRoads = [];
-    const seen = new Set();
-    for (const s of steps) {
-      if (s.road && s.distMetres > 300 && !seen.has(s.road)) {
-        majorRoads.push(s.road);
-        seen.add(s.road);
-        if (majorRoads.length >= 4) break;
-      }
-    }
-    return {
-      index       : idx,
-      label       : idx === 0 ? 'Fastest Route' : idx === 1 ? 'Alternative Route' : 'Scenic Route',
-      totalDist   : formatDistance(totalDist),
-      totalDistM  : totalDist,
-      totalDur    : formatDuration(totalDur),
-      totalDurSec : totalDur,
-      steps       : steps.slice(0, 12),
-      majorRoads,
-      destName,
-      geometry    : route.geometry,
-    };
-  });
-}
 
 function renderRouteCard(routeResult: any) {
   const el = document.getElementById('route-result');
@@ -188,7 +276,7 @@ function renderRouteCard(routeResult: any) {
                    padding:5px 12px;border-radius:8px;font-size:11px;
                    cursor:pointer;font-family:inherit;font-weight:500">
       ${r.label}<br>
-      <span style="font-size:10px">${r.totalDur} · ${r.totalDist}</span>
+      <span style="font-size:10px">${r.corrDurText} · ${r.distText}</span>
     </button>`
   ).join('');
 
@@ -203,7 +291,7 @@ function renderRouteCard(routeResult: any) {
           ${s.instruction.replace(/^[^\s]+\s/, '')}
           ${s.road ? `<span style="color:var(--muted,#888)"> onto ${s.road}</span>` : ''}
         </div>
-        <div style="font-size:10px;color:var(--muted,#888)">${s.distance}</div>
+        <div style="font-size:10px;color:var(--muted,#888)">${s.distText}</div>
       </div>
     </div>`
   ).join('');
@@ -215,10 +303,10 @@ function renderRouteCard(routeResult: any) {
                   display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
         <div>
           <div style="font-size:13px;font-weight:600;color:white">
-            📍 Route to ${routeResult.dest}
+            📍 Route to ${routeResult.dest?.fullAddress || routeResult.dest?.displayName}
           </div>
           <div style="font-size:11px;color:#888;margin-top:2px">
-            ${best.totalDur} · ${best.totalDist} · ${best.label}
+            ${best.corrDurText} · ${best.distText} · ${best.label}
           </div>
         </div>
         <a href="${routeResult.mapsUrl}" target="_blank" rel="noopener"
@@ -282,63 +370,57 @@ function renderRouteCard(routeResult: any) {
             ${s.instruction.replace(/^[^\s]+\s/, '')}
             ${s.road ? `<span style="color:#888"> onto ${s.road}</span>` : ''}
           </div>
-          <div style="font-size:10px;color:#888">${s.distance}</div>
+          <div style="font-size:10px;color:#888">${s.distText}</div>
         </div>
       </div>`
     ).join('')}`;
 };
 
-async function handleNavigationQuery(destinationText: string, userLat: number, userLng: number) {
-  if (!userLat || !userLng) {
-    return { error: true, voiceText: 'I need your location to give you directions. Please enable GPS first.' };
-  }
-  const dest = await geocodeCity(destinationText);
-  if (!dest) {
-    return { error: true, voiceText: `I could not find "${destinationText}" on the map. Please say the full name clearly.` };
-  }
-  let osrmData;
-  try {
-    osrmData = await fetchRoute(userLat, userLng, dest.lat, dest.lng);
-  } catch(e) {
-    return { error: true, voiceText: 'I could not calculate the route right now. Please check your internet connection.' };
-  }
-  const routes = parseRoutes(osrmData, dest.display);
-  if (!routes.length) {
-    return { error: true, voiceText: `I found ${dest.display} but could not calculate a driving route.` };
-  }
-  const best = routes[0];
-  const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${userLat},${userLng}&destination=${dest.lat},${dest.lng}&travelmode=driving`;
-  const appleMapsUrl = `http://maps.apple.com/?saddr=${userLat},${userLng}&daddr=${dest.lat},${dest.lng}&dirflg=d`;
-  
-  (window as any)._lastRoute = {
-    destination: dest.display, destLat: dest.lat, destLng: dest.lng, routes, mapsUrl, fetchedAt: new Date().toLocaleTimeString(),
-  };
-
-  return { error: false, dest: dest.display, routes, best, mapsUrl, appleMapsUrl };
-}
-
 function buildSystemPrompt(isRoute: boolean = false) {
   const R = (window as any)._lastRoute;
   const routeSection = (isRoute && R) ? `
-=== LIVE ROUTE DATA (fetched ${R.fetchedAt}) ===
-Destination  : ${R.destination}
-Best route   : ${R.routes[0]?.label} — ${R.routes[0]?.totalDur}, ${R.routes[0]?.totalDist}
-Via roads    : ${R.routes[0]?.majorRoads.join(' → ') || 'Local roads'}
-Key turns (first 5):
-${R.routes[0]?.steps.slice(0,5).map((s: any) =>
-  `  • ${s.instruction}${s.road ? ' onto ' + s.road : ''} — ${s.distance}`
+=== PRECISE NAVIGATION DATA ===
+User asked for   : "${R.destination}"
+Confirmed dest   : ${R.fullAddress}
+GPS destination  : ${R.destLat?.toFixed(5)}°N, ${R.destLng?.toFixed(5)}°E
+
+BEST ROUTE (traffic-corrected):
+  Travel time     : ${R.routes[0]?.corrDurText}
+                    (OSRM base: ${R.routes[0]?.rawDurMin} min, corrected
+                     for Indian traffic — ${R.congestion?.factor}× multiplier
+                     during ${R.congestion?.period === 'peak' ? 'peak hours' :
+                     R.congestion?.period === 'night' ? 'night time' : 'normal traffic'})
+  Distance        : ${R.routes[0]?.distText}
+  Via roads       : ${R.routes[0]?.majorRoads.join(' → ') || 'local roads'}
+  Type            : ${R.routes[0]?.label}
+
+TURN-BY-TURN (first 5 steps):
+${R.routes[0]?.steps.slice(0, 5).map((s: any, i: number) =>
+  `  ${i+1}. ${s.instruction} — ${s.distance}`
 ).join('\n')}
-Alternatives : ${R.routes.length > 1
-  ? R.routes.slice(1).map((r: any) => `${r.label} (${r.totalDur}, ${r.totalDist})`).join('; ')
-  : 'None'}
+
+ALTERNATIVES:
+${R.routes.slice(1).map((r: any) =>
+  `  • ${r.label}: ${r.corrDurText}, ${r.distText}`
+).join('\n') || '  None'}
+
 Maps link    : ${R.mapsUrl}
-=================================================
-When answering about this route:
-- Speak the route naturally in 2–3 sentences like a navigator would
-- Mention the TOTAL travel time first (most important for driver)
-- Name the 2–3 major roads/landmarks by name
-- End by saying "I've shown the full route on your screen"
-- Do NOT list all steps — just the key ones verbally
+Data fetched : ${R.fetchedAt}
+=================================
+
+CRITICAL INSTRUCTIONS FOR YOUR RESPONSE:
+1. Lead with the CONFIRMED full address:
+   "I'm routing you to [fullAddress]."
+2. Give CORRECTED travel time (not raw OSRM):
+   "It will take about [corrDurText] in [periodLabel]."
+3. Name 2–3 major roads:
+   "Take [road1], continue on [road2], then [road3]."
+4. End with:
+   "I've shown the full turn-by-turn directions on your screen."
+5. If alternatives exist, mention the fastest:
+   "There's also a [altTime] alternative if you prefer."
+6. Keep it under 4 spoken sentences.
+7. Sound exactly like Apple Siri — confident, specific, natural.
 ` : '';
 
   const td = (window as any)._liveTrafficData;
@@ -402,88 +484,28 @@ ${routeSection}
 ${trafficSection}`;
 }
 
-async function callGemini(userText: string, systemPrompt: string) {
-  let modelIndex = 0;
+async function callGemini(userText: string, systemPrompt: string, history?: any[]) {
+  try {
+    const res = await fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userText, systemPrompt, history }),
+    });
 
-  for (let attempt = 0; attempt <= GEMINI_CONFIG.maxRetries; attempt++) {
-    const model = GEMINI_CONFIG.models[
-      Math.min(modelIndex, GEMINI_CONFIG.models.length - 1)
-    ];
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/` +
-                `${model}:generateContent?key=${GEMINI_CONFIG.apiKey}`;
-
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ parts: [{ text: userText }] }],
-          generationConfig: {
-            maxOutputTokens: GEMINI_CONFIG.maxOutputTokens,
-            temperature: GEMINI_CONFIG.temperature,
-          },
-        }),
-      });
-
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        const status  = errBody?.error?.status || '';
-        const message = errBody?.error?.message || '';
-
-        if (res.status === 429 || status === 'RESOURCE_EXHAUSTED') {
-          modelIndex++;
-          const wait = Math.min(2000 * Math.pow(2, attempt), 16000);
-          console.warn(`[Gemini] 429 on ${model}. Trying next model in ${wait}ms`);
-          await sleep(wait);
-          continue;
-        }
-
-        if (res.status === 404 || message.includes('not found')) {
-          console.warn(`[Gemini] 404 model retired: ${model}. Switching.`);
-          modelIndex++;
-          continue;
-        }
-
-        if (res.status === 400) {
-          throw new GeminiError('BAD_REQUEST', message);
-        }
-
-        if (res.status === 403) {
-          throw new GeminiError('AUTH_FAILED',
-            'API key invalid or Gemini API not enabled for this project.');
-        }
-
-        if (res.status >= 500) {
-          const wait = Math.min(1500 * Math.pow(2, attempt), 12000);
-          await sleep(wait);
-          continue;
-        }
-
-        throw new GeminiError('UNKNOWN', `HTTP ${res.status}: ${message}`);
-      }
-
-      const data   = await res.json();
-      const text   = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      const finish = data?.candidates?.[0]?.finishReason;
-
-      if (!text) {
-        if (finish === 'SAFETY')    throw new GeminiError('SAFETY', '');
-        if (finish === 'RECITATION') throw new GeminiError('RECITATION', '');
-        throw new GeminiError('EMPTY', 'No response generated.');
-      }
-
-      return text.trim();
-
-    } catch (e: any) {
-      if (e instanceof GeminiError) throw e;
-      if (attempt === GEMINI_CONFIG.maxRetries) throw e;
-      await sleep(1000 * (attempt + 1));
+    const data = await res.json();
+    if (!res.ok) {
+      throw new GeminiError(res.status.toString(), data.error || 'Server error');
     }
-  }
 
-  throw new GeminiError('EXHAUSTED', 'All models and retries failed.');
+    if (!data.text) {
+      throw new GeminiError('EMPTY', 'No response generated.');
+    }
+
+    return data.text.trim();
+  } catch (e: any) {
+    if (e instanceof GeminiError) throw e;
+    throw new GeminiError('UNKNOWN', e.message);
+  }
 }
 
 const TRAFFIC_KEYWORDS = [
@@ -734,79 +756,91 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
     }
 
     if (isNavigation) {
+      
       if (!navigationDestination) {
-        const msg = 'Where would you like to go? Say the full name of the place, like "go to Malleswaram" or "route to Indiranagar".';
+        const msg = 'Where would you like to go? Say something like: go to Malleswaram, or take me to Koramangala.';
         setLastResponse(msg);
         speak(msg);
         return;
       }
 
-      speak(`Finding the best route to ${navigationDestination}. One moment.`);
-      try {
-        let userLat = userLocation?.lat || (window as any)._currentCoords?.lat;
-        let userLng = userLocation?.lng || (window as any)._currentCoords?.lng;
-        
-        if (!userLat || !userLng) {
-            // Need a way to fetch if empty? In `ChatbotModal`, it does not have getGPS access, but it assumes the App passed it in `userLocation`.
-            // Just pass it anyway to handleNavigationQuery and let it fail if null.
-        }
-
-        const routeResult = await handleNavigationQuery(navigationDestination, userLat, userLng);
-
-        if (routeResult.error) {
-          setLastResponse(routeResult.voiceText);
-          speak(routeResult.voiceText);
-          return;
-        }
-
-        const routePrompt = 
-            `The user wants directions from their current location to ${routeResult.dest}. `
-          + `Here is the REAL route data:\n`
-          + `Best route: ${routeResult.best.totalDur} travel time, ${routeResult.best.totalDist} distance.\n`
-          + `Via: ${routeResult.best.majorRoads.join(' → ') || 'local roads'}.\n`
-          + `First 3 key turns:\n`
-          + routeResult.best.steps.slice(0,3).map((s: any) =>
-              `${s.instruction}${s.road ? ' onto ' + s.road : ''} (${s.distance})`
-            ).join(', ')
-          + `\n\nDescribe this route naturally in 2–3 spoken sentences. `
-          + `Lead with the total travel time. Mention the 2 main roads by name. `
-          + `End with "I've shown the full turn-by-turn directions on your screen." `
-          + `No bullet points. Natural Indian English.`;
-
-        const systemPrompt = buildSystemPrompt(true); // true means isRoute
-        
-        let aiReply;
-        try {
-            aiReply = await callGemini(routePrompt, systemPrompt);
-        } catch(e) {
-            aiReply = `The fastest route to ${routeResult.dest} takes `
-                    + `${routeResult.best.totalDur} and covers ${routeResult.best.totalDist}. `
-                    + (routeResult.best.majorRoads.length
-                       ? `You will travel via ${routeResult.best.majorRoads.slice(0,2).join(' and ')}. `
-                       : '')
-                    + `I have shown the full directions on your screen.`;
-        }
-
-        const conversationHistory = JSON.parse(localStorage.getItem('chatbot_context') || '[]');
-        conversationHistory.push({ role: 'user', text });
-        conversationHistory.push({ role: 'assistant', text: aiReply });
-        localStorage.setItem('chatbot_context', JSON.stringify(conversationHistory.slice(-10)));
-
-        setLastResponse(aiReply);
-        speak(aiReply);
-        
-        // Timeout to ensure DOM is updated before rendering the card!
-        setTimeout(() => renderRouteCard(routeResult), 100);
-        return;
-      } catch (err) {
-         console.error(err);
-         const msg = "Sorry, I had an error fetching your route.";
-         setLastResponse(msg);
-         speak(msg);
-         return;
+      speak(`Looking up ${navigationDestination}. Finding the best route.`);
+      
+      let userLat = userLocation?.lat || (window as any)._currentCoords?.lat;
+      let userLng = userLocation?.lng || (window as any)._currentCoords?.lng;
+      let userCity = '';
+      
+      if (!userLat || !userLng) {
+         try {
+           const navReq = await new Promise((resolve, reject) => {
+               navigator.geolocation.getCurrentPosition(resolve, reject);
+           });
+           userLat = (navReq as any).coords.latitude;
+           userLng = (navReq as any).coords.longitude;
+           (window as any)._currentCoords = { lat: userLat, lng: userLng };
+         } catch(e) {
+           const msg = 'Please enable GPS so I can calculate your route.';
+           setLastResponse(msg); speak(msg); return;
+         }
       }
+
+      try {
+        const rev = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?lat=${userLat}&lon=${userLng}&format=json&zoom=10&addressdetails=1`,
+          { headers: { 'Accept-Language': 'en' } }
+        ).then(r => r.json());
+        userCity = rev.address?.city || rev.address?.town || rev.address?.county || '';
+      } catch(e) {}
+
+      const result = await handleNavigationQueryV2(navigationDestination, userLat, userLng, userCity);
+
+      if (result.error) {
+        setLastResponse(result.voice as string);
+        speak(result.voice as string);
+        return;
+      }
+
+      const navPrompt =
+          `User asked: "${text}"\n`
+        + `Confirmed destination: ${result.dest?.fullAddress}\n`
+        + `Traffic-corrected travel time: ${result.best.corrDurText} `
+        + `(during ${result.best.periodLabel})\n`
+        + `Distance: ${result.best.distText}\n`
+        + `Via: ${result.best.majorRoads.join(' → ') || 'local roads'}\n`
+        + `Congestion factor applied: ${result.factor}× (${result.period})\n\n`
+        + `Respond in 3–4 natural spoken sentences. `
+        + `Lead with the exact confirmed address. `
+        + `Give the corrected travel time. `
+        + `Name the 2 main roads. `
+        + `End with telling user you've shown directions on screen. `
+        + `Sound exactly like Apple Siri. No lists. No markdown.`;
+
+      let aiReply;
+      try {
+          const sysP = buildSystemPrompt(true);
+          aiReply = await callGemini(navPrompt, sysP);
+      } catch(e) {
+          aiReply = `${result.confirmMsg} `
+                  + `It will take about ${result.best.corrDurText} in ${result.best.periodLabel}. `
+                  + (result.best.majorRoads.length >= 2
+                     ? `Head via ${result.best.majorRoads[0]} and continue on ${result.best.majorRoads[1]}. `
+                     : result.best.majorRoads.length === 1
+                     ? `Head via ${result.best.majorRoads[0]}. `
+                     : '')
+                  + `I've shown the full turn-by-turn directions on your screen.`;
+      }
+
+      const conversationHistory = JSON.parse(localStorage.getItem('chatbot_context') || '[]');
+      conversationHistory.push({ role: 'user', text });
+      conversationHistory.push({ role: 'assistant', text: aiReply });
+      localStorage.setItem('chatbot_context', JSON.stringify(conversationHistory.slice(-10)));
+
+      setLastResponse(aiReply);
+      speak(aiReply);
+      setTimeout(() => renderRouteCard(result), 100);
+      return;
     }
-    // --- End Navigation Intent Detector ---
+     // --- End Navigation Intent Detector ---
 
     if (isTrafficQuestion(text) && !(window as any)._liveTrafficData) {
       console.log("Chatbot: Intercepted traffic question. Fetching data implicitly.");
@@ -835,17 +869,10 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         throw new Error("OFFLINE");
       }
       
-      const historyContext = conversationHistory
-        .slice(-6)
-        .map((t: any) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.text}`)
-        .join('\n');
-
-      const fullPrompt = conversationHistory.length > 1
-        ? `${historyContext}` // using history
-        : text;
+      const historyContextPayload = conversationHistory.slice(-7, -1); // skip the latest user query which was just pushed
 
       const systemPrompt = buildSystemPrompt();
-      const reply        = await callGemini(fullPrompt, systemPrompt);
+      const reply        = await callGemini(text, systemPrompt, historyContextPayload);
       
       conversationHistory.push({ role: 'assistant', text: reply });
       localStorage.setItem('chatbot_context', JSON.stringify(conversationHistory.slice(-10)));
@@ -872,9 +899,12 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
           'SAFETY'     : "I can't answer that one, but feel free to ask anything about road safety!",
           'RECITATION' : "Let me rephrase that. Ask me again and I'll try differently.",
           'EMPTY'      : "I got a blank response. Please ask me again.",
+          '429'        : "I'm getting a lot of questions right now. Please wait a moment and ask again."
         };
 
-        if (err.code && errorMessages[err.code]) {
+        if (err.message && errorMessages[err.message]) {
+          fallbackText = errorMessages[err.message];
+        } else if (err.code && errorMessages[err.code]) {
           fallbackText = errorMessages[err.code];
         }
       }
