@@ -829,6 +829,55 @@ app.get("/api/config/maps", (req, res) => {
   res.json({ apiKey: process.env.GOOGLE_MAPS_PLATFORM_KEY || "" });
 });
 
+// API: External Traffic API Health Check (Automated Monitoring)
+app.get("/api/health/traffic", async (req, res) => {
+  const apiKey = process.env.GOOGLE_MAPS_PLATFORM_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ status: "error", message: "Missing GOOGLE_MAPS_PLATFORM_KEY" });
+  }
+  try {
+    // Pulse check to Google Maps Routes API
+    // We send a minimal routing request to verify connectivity and API key validity
+    const response = await fetch(`https://routes.googleapis.com/directions/v2:computeRoutes`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters"
+      },
+      body: JSON.stringify({
+        origin: { location: { latLng: { latitude: 12.9716, longitude: 77.5946 } } },
+        destination: { location: { latLng: { latitude: 12.9716, longitude: 77.6000 } } },
+        travelMode: "DRIVE"
+      }),
+      // Using an abort controller for timeout resilience (e.g. 5000ms limit)
+      signal: AbortSignal.timeout(5000)
+    });
+    
+    if (response.status === 429) {
+       // Rate Limited
+       return res.status(429).json({ status: "degraded", message: "Rate limit exceeded on Traffic API" });
+    }
+    
+    if (!response.ok) {
+       return res.status(response.status).json({ status: "error", message: `Traffic API returned ${response.status}` });
+    }
+    
+    const data = await response.json();
+    
+    if (data && data.routes) {
+        return res.json({ status: "healthy" });
+    } else {
+        return res.status(500).json({ status: "error", message: "Invalid payload schema from Traffic API" });
+    }
+  } catch (error: any) {
+    if (error.name === "TimeoutError") {
+      return res.status(504).json({ status: "error", message: "Traffic API connection timed out" });
+    }
+    return res.status(500).json({ status: "error", message: error.message });
+  }
+});
+
 app.get("/api/config/twilio", (req, res) => {
   res.json({ phoneNumber: process.env.TWILIO_FROM_NUMBER || "+1234567890" });
 });
