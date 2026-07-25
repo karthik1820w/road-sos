@@ -62,6 +62,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(msg);
+      (window as any).currentUtterance = utterance;
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
       isSpeakingRef.current = true;

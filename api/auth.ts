@@ -6,6 +6,8 @@ import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import xss from 'xss';
 
+import crypto from 'crypto';
+
 const router = express.Router();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
@@ -90,7 +92,7 @@ router.post('/register', registerLimiter, async (req, res) => {
     
     // We utilize a custom table `app_users` for demonstration
     // schema: id, email, password_hash, is_verified, verification_token, reset_token, reset_token_expires
-    const verificationToken = require('crypto').randomBytes(32).toString('hex');
+    const verificationToken = crypto.randomBytes(32).toString('hex');
     
     const { data: existingUser } = await supabase.from('app_users').select('id').eq('email', email).single();
     if (existingUser) return res.status(409).json({ error: 'Email already in use' });
@@ -192,7 +194,7 @@ router.post('/forgot-password', resetLimiter, async (req, res) => {
     const { email } = schema.parse(req.body);
     const safeEmail = xss(email);
     
-    const resetToken = require('crypto').randomBytes(32).toString('hex');
+    const resetToken = crypto.randomBytes(32).toString('hex');
     // Security: Password reset tokens expire (1 hour)
     const resetTokenExpires = new Date(Date.now() + 3600000).toISOString(); 
 

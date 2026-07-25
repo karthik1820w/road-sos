@@ -25,6 +25,7 @@ import { BatteryIndicator } from './components/BatteryIndicator';
 import TripHistory from './components/TripHistory';
 import { PermissionsModal } from './components/PermissionsModal';
 import { EmergencySOSModal } from './components/EmergencySOSModal';
+import { GForceScatterPlot } from './components/GForceScatterPlot';
 
 import { io } from 'socket.io-client';
 
@@ -367,6 +368,7 @@ export default function App() {
 
 
   const [aiFirstAidResponse, setAiFirstAidResponse] = useState<string>("Listening for incident description...");
+  const [aiFirstAidLiveTranscript, setAiFirstAidLiveTranscript] = useState<string>("");
   const firstAidMentionCountRef = useRef(0);
   const [isAIFirstAidActive, setIsAIFirstAidActive] = useState(false);
   const isAIFirstAidActiveRef = useRef(false);
@@ -1036,6 +1038,7 @@ If information is received and ambulance is sent press 1`;
       if (cleanInput.includes("severe accident") || cleanInput.includes("severe injury")) {
         setIsAIFirstAidActive(false);
         isAIFirstAidActiveRef.current = false;
+        setAiFirstAidLiveTranscript("");
         callNearestHospital();
         return;
       }
@@ -1063,6 +1066,7 @@ If information is received and ambulance is sent press 1`;
         if (isAIFirstAidActiveRef.current) {
           setIsAIFirstAidActive(false);
           isAIFirstAidActiveRef.current = false;
+          setAiFirstAidLiveTranscript("");
           setAiFirstAidResponse("Listening for incident description...");
           speakNotification("First aid assistant session closed. Stay safe.");
         }
@@ -1072,6 +1076,7 @@ If information is received and ambulance is sent press 1`;
       console.error("AI First Aid Error:", err);
       setIsAIFirstAidActive(false);
       isAIFirstAidActiveRef.current = false;
+      setAiFirstAidLiveTranscript("");
       setAiFirstAidResponse("Failed to connect");
       speakNotification("I'm sorry, I couldn't reach the medical servers. Please contact emergency services immediately.");
     }
@@ -1087,6 +1092,7 @@ If information is received and ambulance is sent press 1`;
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel(); // Cancel any ongoing speech
       const utterance = new SpeechSynthesisUtterance(text);
+      (window as any).currentUtterance = utterance; // Prevent GC
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
       isSpeakingRef.current = true;
@@ -1306,9 +1312,6 @@ If information is received and ambulance is sent press 1`;
            rollingTranscriptsRef.current.push({ text: cleanFinal, time: Date.now() });
 
            if (isAIFirstAidActiveRef.current) {
-             if (ignoreNextFinalRef.current) {
-               ignoreNextFinalRef.current = false; // consume ignore flag
-             } else {
                if (aiFirstAidTimeoutRef.current) clearTimeout(aiFirstAidTimeoutRef.current);
                const incident = cleanFinal.replace(/\bfirst aid\b/g, "").trim();
                if (incident !== "") {
@@ -1316,13 +1319,23 @@ If information is received and ambulance is sent press 1`;
                  handleAIFirstAid(incident);
                  if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return; 
                }
-             }
            }
         }
         
         const currentNow = Date.now();
         rollingTranscriptsRef.current = rollingTranscriptsRef.current.filter(x => currentNow - x.time <= 20000);
         const rollingText = rollingTranscriptsRef.current.map(x => x.text).join(' ') + ' ' + cleanInterim;
+
+        if (isAIFirstAidActiveRef.current) {
+            let activeText = cleanCombined;
+            if (activeText.includes("first aid")) {
+                const parts = activeText.split("first aid");
+                activeText = parts[parts.length - 1].trim();
+            }
+            if (activeText.length > 0) {
+               setAiFirstAidLiveTranscript(activeText);
+            }
+        }
 
         // 1. Instant Wake Word Checks (Interim or Final)
         if (cleanCombined.includes("chatbot") || cleanCombined.includes("chat bot")) {
@@ -1358,7 +1371,6 @@ If information is received and ambulance is sent press 1`;
                 }, 15000);
             }
             if (backgroundRecognitionRef.current) {
-              ignoreNextFinalRef.current = true;
               backgroundRecognitionRef.current.abort();
             }
             return;
@@ -1419,6 +1431,7 @@ If information is received and ambulance is sent press 1`;
           if (isAIFirstAidActiveRef.current) {
             setIsAIFirstAidActive(false);
             isAIFirstAidActiveRef.current = false;
+            setAiFirstAidLiveTranscript("");
             speakNotification("First aid assistant closed.");
             canceledSomething = true;
           }
@@ -1527,6 +1540,7 @@ If information is received and ambulance is sent press 1`;
              setIsChatbotModalOpen(false);
              setIsAIFirstAidActive(false);
              isAIFirstAidActiveRef.current = false;
+             setAiFirstAidLiveTranscript("");
              speakNotification("Assistant closed.");
              if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
            }
@@ -1778,9 +1792,9 @@ If information is received and ambulance is sent press 1`;
           
           setHistory(prev => {
             const nextId = prev.length > 0 ? (prev[prev.length - 1].id + 1) : 0;
-            const next = [...prev, { g, time: Date.now(), id: nextId }];
-            if (next.length > 30) return next.slice(1);
-            return next;
+            const nowTime = Date.now();
+            const next = [...prev, { g, time: nowTime, id: nextId }];
+            return next.filter(d => nowTime - d.time <= 60000);
           });
         }
       }
@@ -1977,11 +1991,18 @@ If information is received and ambulance is sent press 1`;
                   <Activity className="text-emerald-500 animate-pulse" size={40} />
                 </div>
                 <h2 className="text-2xl font-black mb-4 tracking-tighter text-white">AI FIRST AID ACTIVE</h2>
-                <div className="bg-slate-800/50 p-6 rounded-2xl border border-white/5 mb-8">
+                <div className="bg-slate-800/50 p-6 rounded-2xl border border-white/5 mb-4">
                   <p className="text-emerald-400 font-medium text-lg leading-relaxed">
                     {aiFirstAidResponse}
                   </p>
                 </div>
+                {aiFirstAidLiveTranscript && (
+                  <div className="bg-slate-900/80 p-4 rounded-xl border border-emerald-500/20 mb-8 min-h-[60px] flex items-center justify-center">
+                    <p className="text-emerald-200/80 italic text-sm text-center">
+                      "{aiFirstAidLiveTranscript}"
+                    </p>
+                  </div>
+                )}
                 <div className="bg-slate-950 p-4 rounded-2xl border border-white/5 text-[10px] text-slate-500 uppercase tracking-[0.2em]">
                   Speak clearly: "My arm is bleeding", "I have a headache", etc.
                 </div>
@@ -1989,6 +2010,7 @@ If information is received and ambulance is sent press 1`;
                   onClick={() => {
                     setIsAIFirstAidActive(false);
                     isAIFirstAidActiveRef.current = false;
+                    setAiFirstAidLiveTranscript("");
                     speakNotification("First aid assistant session closed. Stay safe.");
                   }}
                   className="mt-6 w-full py-4 bg-slate-800 text-slate-400 font-black uppercase tracking-[0.2em] rounded-2xl hover:bg-slate-700 transition-all text-xs"
@@ -2483,21 +2505,8 @@ If information is received and ambulance is sent press 1`;
                 </div>
               </div>
 
-              <div className="flex-1 min-h-[100px] mb-4">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={history}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                    <YAxis hide domain={[0, 5]} />
-                    <Line 
-                      type="monotone" 
-                      dataKey="g" 
-                      stroke="#3b82f6" 
-                      strokeWidth={3} 
-                      dot={false} 
-                      animationDuration={300}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
+              <div className="flex-1 min-h-[150px] mb-4 relative z-10 bg-slate-950/50 rounded-xl border border-slate-800">
+                <GForceScatterPlot data={history} />
               </div>
 
               <div className="h-1.5 bg-slate-950 rounded-full overflow-hidden relative z-10">
