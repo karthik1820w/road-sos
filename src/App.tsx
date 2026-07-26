@@ -35,7 +35,7 @@ export default function App() {
   const navigate = useNavigate();
   const locationPath = useLocation().pathname;
   
-  const [setupComplete, setSetupComplete] = useState(false);
+  const [setupComplete, setSetupComplete] = useState(() => localStorage.getItem('roadSosSetupComplete') === 'true');
   const [mapsApiKey, setMapsApiKey] = useState(() => localStorage.getItem('roadsos_maps_key') || INITIAL_GOOGLE_MAPS_KEY);
   const [hasCheckedKey, setHasCheckedKey] = useState(mapsApiKey !== '');
   
@@ -56,7 +56,7 @@ export default function App() {
         });
     }
   }, [hasCheckedKey]);
-  const [userPhone, setUserPhone] = useState("");
+  const [userPhone, setUserPhone] = useState(() => localStorage.getItem('roadSosUserPhone') || "");
   const userPhoneRef = useRef(userPhone);
   useEffect(() => {
     userPhoneRef.current = userPhone;
