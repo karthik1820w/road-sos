@@ -319,13 +319,16 @@ Emergency details: ${incident}
 Contact: ${hospitalNames}
 If information is received and ambulance is sent press 1`;
 
-      const recipients = ["+916361892311", "+917892375787"];
+      const medicalInfoStr = localStorage.getItem("roadsos_medical");
+      const mInfo = medicalInfoStr ? JSON.parse(medicalInfoStr) : { emergencyContacts: [] };
+      const mappedContacts = (mInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n && /^\+?[\d\s()-]{7,20}$/.test(n));
+      const recipients = mappedContacts.length > 0 ? mappedContacts : ["+916361892311"];
 
       // Send SMS Broadcast
       if ((window as any).roadsosExecuteWithOfflineFallback) {
-         await (window as any).roadsosExecuteWithOfflineFallback('/api/emergencies/notify', 'POST', { recipients, message: medicalTxt });
+         await (window as any).roadsosExecuteWithOfflineFallback('/api/sos/notify', 'POST', { recipients, message: medicalTxt });
       } else {
-         await fetch('/api/emergencies/notify', {
+         await fetch('/api/sos/notify', {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
            body: JSON.stringify({ recipients, message: medicalTxt })
@@ -335,15 +338,15 @@ If information is received and ambulance is sent press 1`;
       // Initiate Call with BOB Needs Help repeated 3 times and exact location
       const voiceCallMessage = `BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help. The user is located at: ${locationDescription}. Assistance is needed immediately.`;
       
-      const numbersToCall = ["+916361892311", "+917892375787"];
+      const numbersToCall = recipients;
       for (const ph of numbersToCall) {
         if ((window as any).roadsosExecuteWithOfflineFallback) {
-          await (window as any).roadsosExecuteWithOfflineFallback('/api/calls/initiate', 'POST', {
+          await (window as any).roadsosExecuteWithOfflineFallback('/api/sos/call-initiate', 'POST', {
             to: ph,
             message: voiceCallMessage
           });
         } else {
-          await fetch('/api/calls/initiate', {
+          await fetch('/api/sos/call-initiate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -376,12 +379,15 @@ Alerted Responders: ${hospitalList}
 SENDER_UID: RoadSOS_ALPHA_001
 If information is received and ambulance is sent press 1`;
 
-      const recipients = ["+916361892311", "+917892375787"];
+      const medicalInfoStr = localStorage.getItem("roadsos_medical");
+      const mInfo = medicalInfoStr ? JSON.parse(medicalInfoStr) : { emergencyContacts: [] };
+      const mappedContacts = (mInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n && /^\+?[\d\s()-]{7,20}$/.test(n));
+      const recipients = mappedContacts.length > 0 ? mappedContacts : ["+916361892311"];
 
       if ((window as any).roadsosExecuteWithOfflineFallback) {
-         await (window as any).roadsosExecuteWithOfflineFallback('/api/emergencies/notify', 'POST', { recipients, message: distressMessage });
+         await (window as any).roadsosExecuteWithOfflineFallback('/api/sos/notify', 'POST', { recipients, message: distressMessage });
       } else {
-         const res = await fetch('/api/emergencies/notify', {
+         const res = await fetch('/api/sos/notify', {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
            body: JSON.stringify({ recipients, message: distressMessage })
@@ -404,15 +410,15 @@ If information is received and ambulance is sent press 1`;
       }
       const voiceCallMessage = `BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help. BOB IN Danger!! BOB Needs help. The user is located at: ${locDesc}. Assistance is needed immediately.`;
 
-      const numbersToCall = ["+916361892311", "+917892375787"];
+      const numbersToCall = recipients;
       for (const ph of numbersToCall) {
         if ((window as any).roadsosExecuteWithOfflineFallback) {
-          await (window as any).roadsosExecuteWithOfflineFallback('/api/calls/initiate', 'POST', {
+          await (window as any).roadsosExecuteWithOfflineFallback('/api/sos/call-initiate', 'POST', {
              to: ph,
              message: voiceCallMessage
           });
         } else {
-          await fetch('/api/calls/initiate', {
+          await fetch('/api/sos/call-initiate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 

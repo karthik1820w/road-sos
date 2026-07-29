@@ -17,6 +17,7 @@ dotenv.config();
 const reportStore = new Map<string, Buffer>();
 
 const app = express();
+app.get("/api/health", (req, res) => { res.json({ status: "ok" }); });
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: { origin: "*" }
@@ -770,11 +771,12 @@ app.post("/api/sos/send-report", async (req, res) => {
         // Clean up report after 12 hours
         setTimeout(() => reportStore.delete(reportId), 12 * 60 * 60 * 1000);
 
+        let reportUrl = "";
         try {
           const client = getTwilio();
           const from = process.env.TWILIO_FROM_NUMBER;
           const hostUrl = `${req.headers['x-forwarded-proto'] || req.protocol}://${req.get('host')}`;
-          const reportUrl = `${hostUrl}/api/report/${reportId}.pdf`;
+          reportUrl = `${hostUrl}/api/report/${reportId}.pdf`;
 
           await client.messages.create({
             body: `RoadSOS: Victim's Medical & Accident Logs PDF Report available here: ${reportUrl}`,

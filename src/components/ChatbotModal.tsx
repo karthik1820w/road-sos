@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Bot, Mic, ArrowLeft, Loader2, Volume2 } from 'lucide-react';
 
 import { TrafficUpdate } from '../services/trafficService';
+import { hardwareService } from '../services/hardwareService';
 
 class GeminiError extends Error {
   code: string;
@@ -772,11 +773,9 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       
       if (!userLat || !userLng) {
          try {
-           const navReq = await new Promise((resolve, reject) => {
-               navigator.geolocation.getCurrentPosition(resolve, reject);
-           });
-           userLat = (navReq as any).coords.latitude;
-           userLng = (navReq as any).coords.longitude;
+           const pos = await hardwareService.getCurrentLocation();
+           userLat = pos.lat;
+           userLng = pos.lng;
            (window as any)._currentCoords = { lat: userLat, lng: userLng };
          } catch(e) {
            const msg = 'Please enable GPS so I can calculate your route.';

@@ -21,6 +21,7 @@ const INITIAL_GOOGLE_MAPS_KEY = '';
 
 import { SOSTrigger } from './components/SOSTrigger';
 import { geoapifyService } from './services/geoapifyService';
+import { hardwareService } from './services/hardwareService';
 import { BatteryIndicator } from './components/BatteryIndicator';
 import TripHistory from './components/TripHistory';
 import { PermissionsModal } from './components/PermissionsModal';
@@ -75,6 +76,9 @@ export default function App() {
   const [allowVoiceFeedback, setAllowVoiceFeedback] = useState(true);
   const allowVoiceFeedbackRef = useRef(true);
   useEffect(() => { allowVoiceFeedbackRef.current = allowVoiceFeedback; }, [allowVoiceFeedback]);
+  const [allowVoiceCommand, setAllowVoiceCommand] = useState(true);
+  const allowVoiceCommandRef = useRef(true);
+  useEffect(() => { allowVoiceCommandRef.current = allowVoiceCommand; }, [allowVoiceCommand]);
 
   // Ping heartbeat to keep connection alive
   useEffect(() => {
@@ -512,13 +516,7 @@ export default function App() {
       let lat = userLocation.lat;
       let lng = userLocation.lng;
       try {
-          const getLiveGPS = () => new Promise<{lat: number, lng: number}>((resolve, reject) => {
-              navigator.geolocation.getCurrentPosition(
-                  pos => resolve({lat: pos.coords.latitude, lng: pos.coords.longitude}),
-                  err => reject(err),
-                  { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
-              );
-          });
+          const getLiveGPS = async () => await hardwareService.getCurrentLocation();
           const livePos = await getLiveGPS();
           lat = livePos.lat;
           lng = livePos.lng;
@@ -535,13 +533,8 @@ export default function App() {
     let loc = userLocationRef.current;
     if (!loc && !locationName) {
          try {
-             const getLiveGPS = () => new Promise<{lat: number, lng: number}>((resolve, reject) => {
-                 navigator.geolocation.getCurrentPosition(
-                     pos => resolve({lat: pos.coords.latitude, lng: pos.coords.longitude}),
-                     err => reject(err),
-                     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-                 );
-             });
+             const getLiveGPS = async () => await hardwareService.getCurrentLocation();
+
              const livePos = await getLiveGPS();
              setUserLocation(livePos);
              loc = livePos;
@@ -572,13 +565,7 @@ export default function App() {
       if (!lat || !lng) {
           // One more attempt if it wasn't set yet
           try {
-             const getLiveGPS = () => new Promise<{lat: number, lng: number}>((resolve, reject) => {
-                 navigator.geolocation.getCurrentPosition(
-                     pos => resolve({lat: pos.coords.latitude, lng: pos.coords.longitude}),
-                     err => reject(err),
-                     { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
-                 );
-             });
+             const getLiveGPS = async () => await hardwareService.getCurrentLocation();
              const livePos = await getLiveGPS();
              lat = livePos.lat;
              lng = livePos.lng;
@@ -603,13 +590,8 @@ export default function App() {
          }
       } else {
          try {
-             const getLiveGPS = () => new Promise<{lat: number, lng: number}>((resolve, reject) => {
-                 navigator.geolocation.getCurrentPosition(
-                     pos => resolve({lat: pos.coords.latitude, lng: pos.coords.longitude}),
-                     err => reject(err),
-                     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-                 );
-             });
+             const getLiveGPS = async () => await hardwareService.getCurrentLocation();
+
              const livePos = await getLiveGPS();
              lat = livePos.lat;
              lng = livePos.lng;
@@ -717,16 +699,15 @@ export default function App() {
     // Provide a way to get the latest location if userLocation is null or stale
     let loc = null;
     try {
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000, maximumAge: 10000 });
-      });
-      loc = { lat: position.coords.latitude, lng: position.coords.longitude };
+      loc = await hardwareService.getCurrentLocation();
     } catch {
       loc = null; // fallback to whatever we can if we had a ref
     }
 
     saveLogEntry(reason, loc);
-    const targetNumbers = ["+916361892311"];
+    const mInfo = medicalInfoRef.current;
+    const mappedContacts = (mInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n && /^\+?[\d\s()-]{7,20}$/.test(n));
+    const targetNumbers = mappedContacts.length > 0 ? mappedContacts : ["+916361892311"];
 
     let addressStr = "Unknown Location";
     if (loc) {
@@ -738,7 +719,6 @@ export default function App() {
       }
     }
 
-    const mInfo = medicalInfoRef.current;
     const phone = userPhoneRef.current || 'Unknown User';
 
     const smsMessage = `SECRET DISTRESS ALERT: User ${phone} is in danger.
@@ -758,7 +738,7 @@ IMMEDIATE ASSISTANCE REQUIRED.`;
       await new Promise(resolve => setTimeout(resolve, 2000));
 
       // 2. Initiate Call concurrently for all targets
-      await Promise.all(targetNumbers.map(target => 
+      await Promise.all(targetNumbers.map((target: string) => 
         executeWithOfflineFallback('/api/sos/call-neon', 'POST', { to: target, patientName: mInfo.name || phone })
       ));
 
@@ -790,18 +770,15 @@ IMMEDIATE ASSISTANCE REQUIRED.`;
     // Provide a way to get the latest location if userLocation is null or stale
     let loc = null;
     try {
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000, maximumAge: 10000 });
-      });
-      loc = { lat: position.coords.latitude, lng: position.coords.longitude };
+      loc = await hardwareService.getCurrentLocation();
     } catch {
       loc = null; // fallback to whatever we can if we had a ref
     }
     
     saveLogEntry(reason, loc);
 
-    const mappedContacts = (mInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n && /^\\+?[\\d\\s()-]{7,20}$/.test(n));
-    const targetNumbers = targetOverride ? [targetOverride] : (mappedContacts.length > 0 ? mappedContacts : ["+916361892311"]);
+    const mappedContacts = (mInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n && /^\+?[\d\s()-]{7,20}$/.test(n));
+    const targetNumbers = mappedContacts.length > 0 ? mappedContacts : ["+916361892311"];
 
     let addressStr = "Unknown Location";
     let locationDescription = "Location data is currently unavailable.";
@@ -1014,11 +991,11 @@ If information is received and ambulance is sent press 1`;
     }
     
     // As per requirement: call +91 7892375787 but display nearest hospital calling.
-    targetHospitalNumber = forcedTargetNumber; // Override to strictly call the required specific number, but we kept the fetch logic if we wanted dynamic numbers.
+    targetHospitalNumber = forcedTargetNumber;
 
     // Allow executeDistressBroadcast to run
     isBroadcastingRef.current = false;
-    await executeDistressBroadcast(`Emergency dispatch to nearest hospital`, false, targetHospitalNumber);
+    await executeDistressBroadcast(`Emergency dispatch to nearest hospital`, false);
   };
 
   const handleAIFirstAid = async (incident: string) => {
@@ -1192,7 +1169,7 @@ If information is received and ambulance is sent press 1`;
     isBroadcastingRef.current = true;
 
     saveLogEntry("Secret distress hold trigger (SOS Hold)", userLocation);
-    const mappedContacts = (medicalInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n && /^\\+?[\\d\\s()-]{7,20}$/.test(n));
+    const mappedContacts = (medicalInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n && /^\+?[\d\s()-]{7,20}$/.test(n));
     const targetNumbers = mappedContacts.length > 0 ? mappedContacts : ["+916361892311", "+917892375787"];
     
     let addressStr = "Unknown Location";
@@ -1263,7 +1240,7 @@ If information is received and ambulance is sent press 1`;
 
   // Background Speech Recognition for Safety Word
   useEffect(() => {
-    if (isEmergency || isVoiceActive || isChatbotModalOpen) {
+    if (isEmergency || isVoiceActive || isChatbotModalOpen || !allowVoiceCommand) {
       return;
     }
 
@@ -1718,11 +1695,11 @@ If information is received and ambulance is sent press 1`;
           backgroundRecognitionRef.current.abort();
       }
     };
-  }, [isEmergency, isVoiceActive, isMonitoring, safetyWord, isChatbotModalOpen]);
+  }, [isEmergency, isVoiceActive, isMonitoring, safetyWord, isChatbotModalOpen, allowVoiceCommand]);
 
   useEffect(() => {
     // Check if motion is supported
-    if (!window.DeviceMotionEvent) {
+    if (!window.DeviceMotionEvent && !hardwareService.isNative) {
       setMotionPermission('unsupported');
     }
   }, []);
@@ -1740,41 +1717,37 @@ If information is received and ambulance is sent press 1`;
   }, [allowBackgroundMonitoring, motionPermission]);
 
   useEffect(() => {
-    // Fast initial fix (low accuracy)
-    navigator.geolocation.getCurrentPosition(
-      (pos) => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      (err) => console.warn("[GPS] Initial fix failed:", err),
-      { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
-    );
+    let watchId: any = null;
 
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-      },
-      (err) => {
-        console.warn("[GPS] Geolocation failed:", err);
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
+    const setupLocation = async () => {
+      try {
+        const pos = await hardwareService.getCurrentLocation();
+        setUserLocation(pos);
+      } catch (err) {
+        console.warn("[GPS] Initial fix failed:", err);
+      }
+
+      watchId = await hardwareService.watchLocation((lat, lng) => {
+        setUserLocation({ lat, lng });
+      });
+    };
+
+    setupLocation();
 
     return () => {
-      navigator.geolocation.clearWatch(watchId);
+      if (watchId !== null) {
+        hardwareService.clearWatch(watchId);
+      }
     };
   }, []);
 
   useEffect(() => {
     if (!isMonitoring) return;
-
     let lastStateUpdate = 0;
+    let motionWatchId: any = null;
 
-    // Accelerometer
-    const handleMotion = (e: DeviceMotionEvent) => {
-      if (e.accelerationIncludingGravity) {
-        const { x, y, z } = e.accelerationIncludingGravity;
-        const curX = x || 0;
-        const curY = y || 0;
-        const curZ = z || 0;
-        
+    const startMotion = async () => {
+      motionWatchId = await hardwareService.watchMotion((curX, curY, curZ) => {
         const g = Math.sqrt(curX**2 + curY**2 + curZ**2) / 9.81;
 
         if (g > 12.0 && !isEmergencyRef.current && !isDistressPendingRef.current) {
@@ -1797,31 +1770,28 @@ If information is received and ambulance is sent press 1`;
             return next.filter(d => nowTime - d.time <= 60000);
           });
         }
-      }
+      });
     };
 
-    window.addEventListener('devicemotion', handleMotion);
-    return () => window.removeEventListener('devicemotion', handleMotion);
+    startMotion();
+
+    return () => {
+      if (motionWatchId) {
+        hardwareService.clearMotionWatch(motionWatchId);
+      }
+    };
   }, [isMonitoring]);
 
   const requestMotionPermission = async () => {
     try {
-      // iOS 13+ requires explicit permission
-      if (typeof (DeviceMotionEvent as any).requestPermission === 'function') {
-        const response = await (DeviceMotionEvent as any).requestPermission();
-        if (response === 'granted') {
-          setMotionPermission('granted');
-          setIsMonitoring(true);
-          return true;
-        } else {
-          setMotionPermission('denied');
-          return false;
-        }
-      } else {
-        // Non-iOS or older versions
+      const response = await hardwareService.requestPermissions();
+      if (response === 'granted' || response === 'prompt' || hardwareService.isNative) {
         setMotionPermission('granted');
         setIsMonitoring(true);
         return true;
+      } else {
+        setMotionPermission('denied');
+        return false;
       }
     } catch (e) {
       console.error("Motion Permission Error:", e);
@@ -2886,6 +2856,18 @@ If information is received and ambulance is sent press 1`;
                   className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${allowBackgroundMonitoring ? 'bg-blue-500' : 'bg-slate-700'}`}
                 >
                   <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${allowBackgroundMonitoring ? 'right-1' : 'left-1'}`}></div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between p-4 bg-slate-950/50 border border-slate-800 rounded-2xl">
+                <div>
+                  <h4 className="text-sm font-bold text-white mb-1">Voice Commands</h4>
+                  <p className="text-[10px] text-slate-400">Allow background voice recognition</p>
+                </div>
+                <div 
+                  onClick={() => setAllowVoiceCommand(!allowVoiceCommand)}
+                  className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${allowVoiceCommand ? 'bg-blue-500' : 'bg-slate-700'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${allowVoiceCommand ? 'right-1' : 'left-1'}`}></div>
                 </div>
               </div>
               <div className="flex items-center justify-between p-4 bg-slate-950/50 border border-slate-800 rounded-2xl">

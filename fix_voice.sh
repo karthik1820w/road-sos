@@ -1,0 +1,5 @@
+#!/bin/bash
+sed -i '322s/.*/      const medicalInfoStr = localStorage.getItem("roadsos_medical"); const mInfo = medicalInfoStr ? JSON.parse(medicalInfoStr) : { emergencyContacts: [] }; const mappedContacts = (mInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n \&\& \/^\\+?[\\d\\s()-]{7,20}$/.test(n)); const recipients = mappedContacts.length > 0 ? mappedContacts : ["+916361892311"];/' src/components/VoiceInterface.tsx
+sed -i '338s/.*/      const numbersToCall = recipients;/' src/components/VoiceInterface.tsx
+sed -i '379s/.*/      const medicalInfoStr = localStorage.getItem("roadsos_medical"); const mInfo = medicalInfoStr ? JSON.parse(medicalInfoStr) : { emergencyContacts: [] }; const mappedContacts = (mInfo.emergencyContacts || []).map((c: any) => c.number).filter((n: string) => n \&\& \/^\\+?[\\d\\s()-]{7,20}$/.test(n)); const recipients = mappedContacts.length > 0 ? mappedContacts : ["+916361892311"];/' src/components/VoiceInterface.tsx
+sed -i '407s/.*/      const numbersToCall = recipients;/' src/components/VoiceInterface.tsx

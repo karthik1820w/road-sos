@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ShieldAlert, MapPin, Mic, Phone, CheckCircle2, ChevronRight, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { hardwareService } from '../services/hardwareService';
 
 interface PermissionsModalProps {
   onComplete: (userPhone: string) => void;
@@ -20,23 +21,18 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({ onComplete }
     }
   }, [onComplete]);
 
-  const requestLocation = () => {
-    // Request DeviceMotion on iOS
-    if (typeof (DeviceMotionEvent as any)?.requestPermission === 'function') {
-      (DeviceMotionEvent as any).requestPermission().catch(console.warn);
+  const requestLocation = async () => {
+    try {
+      await hardwareService.requestPermissions();
+      await hardwareService.getCurrentLocation();
+      setLocGranted(true);
+      setStep(2);
+    } catch (err) {
+      console.warn('Location denied', err);
+      // Force them to continue anyway for web
+      setLocGranted(true);
+      setStep(2);
     }
-    navigator.geolocation.getCurrentPosition(
-      () => {
-        setLocGranted(true);
-        setStep(2);
-      },
-      (err) => {
-        console.warn('Location denied', err);
-        // Force them to continue anyway for web
-        setLocGranted(true);
-        setStep(2);
-      }
-    );
   };
 
   const requestMic = () => {
@@ -199,10 +195,10 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({ onComplete }
                           const newContacts = contacts.flatMap((c: any) => 
                             (c.tel || []).map((t: string) => ({ label: (c.name && c.name.length > 0) ? c.name[0] : 'Imported', number: t }))
                           );
-                          const existingInfoStr = localStorage.getItem('roadSosMedicalInfo');
+                          const existingInfoStr = localStorage.getItem('roadsos_medical');
                           const info = existingInfoStr ? JSON.parse(existingInfoStr) : { emergencyContacts: [] };
                           info.emergencyContacts = [...(info.emergencyContacts || []), ...newContacts];
-                          localStorage.setItem('roadSosMedicalInfo', JSON.stringify(info));
+                          localStorage.setItem('roadsos_medical', JSON.stringify(info));
                         }
                      } catch(e) {
                         console.warn(e);
