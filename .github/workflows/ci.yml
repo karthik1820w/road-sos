@@ -1,0 +1,53 @@
+name: CI / CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    # Run canary checks every 15 minutes
+    - cron: '*/15 * * * *'
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type Check
+        run: npx tsc --noEmit
+
+      - name: Unit & Integration Tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+  canary_check:
+    # Only run the canary step on schedule or post-deploy (for our setup, let's just make it a scheduled job)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Health Endpoint
+        run: |
+          RESPONSE=$(curl -s https://your-production-url.com/api/health -H "Authorization: Bearer ${{ secrets.HEALTH_PING_TOKEN }}")
+          TWILIO=$(echo $RESPONSE | jq -r '.twilio')
+          GEMINI=$(echo $RESPONSE | jq -r '.gemini')
+          if [ "$TWILIO" != "ok" ] || [ "$GEMINI" != "ok" ]; then
+            echo "Dependency is down! Response: $RESPONSE"
+            exit 1
+          fi

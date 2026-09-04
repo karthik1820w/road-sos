@@ -111,17 +111,17 @@ export default function App() {
 
   const executeWithOfflineFallback = async (url: string, method: string, body: any) => {
     if (!navigator.onLine) {
-      setOfflineQueue(prev => [...prev, { url, method, body: JSON.stringify(body) }]);
+      setOfflineQueue(prev => [...prev, { url, method, body: JSON.stringify({ ...body, idempotencyKey: 'POST' === 'POST' ? crypto.randomUUID() : undefined }) }]);
       return;
     }
     try {
        await fetch(url, {
           method,
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
+          body: JSON.stringify({ ...body, idempotencyKey: 'POST' === 'POST' ? crypto.randomUUID() : undefined })
        });
     } catch (e) {
-       setOfflineQueue(prev => [...prev, { url, method, body: JSON.stringify(body) }]);
+       setOfflineQueue(prev => [...prev, { url, method, body: JSON.stringify({ ...body, idempotencyKey: 'POST' === 'POST' ? crypto.randomUUID() : undefined }) }]);
     }
   };
 
@@ -972,7 +972,7 @@ If information is received and ambulance is sent press 1`;
           }
         };
 
-        const res = await fetch(placesUrl, { method: 'POST', headers, body: JSON.stringify(body) });
+        const res = await fetch(placesUrl, { method: 'POST', headers, body: JSON.stringify({ ...body, idempotencyKey: 'POST' === 'POST' ? crypto.randomUUID() : undefined }) });
         if (res.ok) {
           const data = await res.json();
           if (data.places && data.places.length > 0) {
@@ -2521,7 +2521,7 @@ If information is received and ambulance is sent press 1`;
                 onClick={triggerMockCrash}
                 className="mt-6 z-10 text-[10px] font-black text-red-500/50 hover:text-red-500 uppercase tracking-widest transition-colors"
               >
-                Mock Crash Sensor
+                Simulate Crash Sensor
               </button>
             </div>
           )}

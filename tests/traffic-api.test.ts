@@ -1,3 +1,4 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 /**
  * Automated Integration & Uptime Testing Script for Traffic API
  * Role: Senior QA Automation Engineer & DevOps Specialist
@@ -9,7 +10,7 @@
 // Ex: npm install --save-dev jest @types/jest ts-jest
 
 // We mock the native global fetch to simulate different API behaviors
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe("Traffic API Resilience and Integration Suite (Google Maps Routes API)", () => {
 
@@ -17,7 +18,7 @@ describe("Traffic API Resilience and Integration Suite (Google Maps Routes API)"
   const MOCK_API_KEY = "dummy-api-key";
 
   beforeEach(() => {
-    (global.fetch as jest.Mock).mockClear();
+    (global.fetch as ReturnType<typeof vi.fn>).mockClear();
   });
 
   /**
@@ -35,7 +36,7 @@ describe("Traffic API Resilience and Integration Suite (Google Maps Routes API)"
       ]
     };
     
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       status: 200,
       json: async () => mockSuccessResponse,
@@ -76,7 +77,7 @@ describe("Traffic API Resilience and Integration Suite (Google Maps Routes API)"
       ]
     };
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       status: 200,
       json: async () => mockPayload,
@@ -108,7 +109,7 @@ describe("Traffic API Resilience and Integration Suite (Google Maps Routes API)"
    */
   it("Resilience (Timeout): Aborts connection cleanly if response exceeds 5 seconds", async () => {
     // Mock fetch to simulate a delayed response or timeout error
-    (global.fetch as jest.Mock).mockImplementationOnce(() => 
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementationOnce(() => 
       Promise.reject(new Error("TimeoutError"))
     );
 
@@ -130,7 +131,7 @@ describe("Traffic API Resilience and Integration Suite (Google Maps Routes API)"
    * Simulates rate-limiting conditions. Test verifies application handles it gracefully.
    */
   it("Resilience (Rate Limit): Gracefully intercepts HTTP 429 Too Many Requests", async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,
       status: 429,
       headers: {
@@ -152,7 +153,7 @@ describe("Traffic API Resilience and Integration Suite (Google Maps Routes API)"
    * Asserts bad credentials trigger immediate error handling workflows.
    */
   it("Resilience (Auth Validation): Rejects with explicit logs on expired or invalid API key (403)", async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,
       status: 403,
       json: async () => ({

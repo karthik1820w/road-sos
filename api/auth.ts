@@ -14,7 +14,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || ''; // Prefer service role for admin tasks
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secure-secret-do-not-use-in-production';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable is required');
 const JWT_EXPIRES_IN = '1h'; // Sessions expire
 
 // Validation Schemas
@@ -104,12 +105,7 @@ router.post('/register', registerLimiter, async (req, res) => {
       verification_token: verificationToken
     }]);
 
-    if (error) {
-       if (error.code === '42P01') { // table doesn't exist, lets simulate success for local mockup
-         return res.status(201).json({ message: 'User registered (mocked, app_users table missing) Please verify email.', mock: true });
-       }
-       throw error;
-    }
+    if (error) throw error;
 
     // Security: Email verification logic (simulated email send)
     console.log(`[Email Service] Verification link: http://localhost:3000/api/auth/verify?token=${verificationToken}`);
@@ -177,12 +173,6 @@ router.post('/login', loginLimiter, async (req, res) => {
 
     res.json({ message: 'Login successful' });
   } catch (error: any) {
-     if (error.code === '42P01') {
-        // Mock successful login for missing table
-        const token = jwt.sign({ id: 'mock-id', email: safeEmail }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-        res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 3600000, sameSite: 'strict' });
-        return res.json({ message: 'Login successful (mock)' });
-     }
      res.status(500).json({ error: error.message });
   }
 });

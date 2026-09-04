@@ -1,3 +1,4 @@
+import helmet from 'helmet';
 import express from "express";
 import path from "path";
 import { createClient } from "@supabase/supabase-js";
@@ -17,6 +18,44 @@ dotenv.config();
 const reportStore = new Map<string, Buffer>();
 
 const app = express();
+
+import { authenticateToken } from "./auth.js";
+app.get('/api/health', authenticateToken, async (req, res) => {
+  const start = performance.now();
+  const status = {
+    twilio: 'down',
+    gemini: 'down',
+    supabase: 'down',
+    maps: 'down',
+    latencyMs: 0
+  };
+
+  try {
+    // Ping Gemini
+    const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: "ping" }] }] })
+    });
+    if (aiResponse.ok) status.gemini = 'ok';
+    else status.gemini = 'degraded';
+  } catch (e) { }
+
+  try {
+    // Ping Supabase
+    if (process.env.SUPABASE_URL) {
+      const sbResponse = await fetch(`${process.env.SUPABASE_URL}/rest/v1/`, {
+        headers: { 'apikey': process.env.SUPABASE_ANON_KEY || '' }
+      });
+      if (sbResponse.ok) status.supabase = 'ok';
+      else status.supabase = 'degraded';
+    }
+  } catch (e) { }
+
+  status.latencyMs = Math.round(performance.now() - start);
+  res.json(status);
+});
+
 app.get("/api/health", (req, res) => { res.json({ status: "ok" }); });
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -32,6 +71,7 @@ app.set("trust proxy", 1);
 
 import rateLimit from "express-rate-limit";
 
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false, crossOriginOpenerPolicy: false, crossOriginResourcePolicy: false, xFrameOptions: false }));
 // Global API Limiter to prevent basic scraping and abuse
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 min
@@ -52,8 +92,8 @@ const aiLimiter = rateLimit({
   }
 });
 
-// app.use("/api/", apiLimiter);
-// app.use("/api/ai/", aiLimiter);
+app.use("/api/", apiLimiter);
+app.use("/api/ai/", aiLimiter);
 
 // Expose io to routes if needed
 (app as any).io = io;
@@ -130,8 +170,7 @@ const TRAINED_QA: QA[] = [
   { q: "i have a headache", a: "Rest in a quiet place, drink water, avoid screen exposure, and seek medical help if the headache becomes severe." },
   { q: "fracture or swelling in his hands or legs", a: "Keep the injured hand or leg still, apply ice to reduce swelling, avoid movement, and seek medical help immediately if a fracture is suspected." },
   { q: "fracture or swelling", a: "Keep the injured hand or leg still, apply ice to reduce swelling, avoid movement, and seek medical help immediately if a fracture is suspected." },
-  { q: "hello", a: "HEILO bob how are you doing!" },
-  { q: "What should you do if an accident victim stops responding during transport?", a: "Stop safely, check breathing and pulse, and begin CPR if necessary." }
+    { q: "What should you do if an accident victim stops responding during transport?", a: "Stop safely, check breathing and pulse, and begin CPR if necessary." }
 ];
 
 const findTrainedAnswer = (userInput: string): string | null => {
@@ -435,10 +474,10 @@ app.post("/api/ai/ask", async (req, res) => {
     if (question.toLowerCase().trim().includes("hello")) {
       if (stream) {
         res.setHeader('Content-Type', 'text/event-stream');
-        res.write(`data: ${JSON.stringify({ chunk: "HEILO bob how are you doing!" })}\n\n`);
+        res.write(`data: ${JSON.stringify({ chunk: "Hello! I am your AI assistant. How can I help?" })}\n\n`);
         return res.end();
       }
-      return res.json({ answer: "HEILO bob how are you doing!" });
+      return res.json({ answer: "Hello! I am your AI assistant. How can I help?" });
     }
 
     // 1. Direct local matching with our trained Q&A
@@ -595,7 +634,7 @@ app.get("/api/emergencies/confirmation-status", (req, res) => {
 });
 
 // API: Confirm Emergency Response manually (from Simulation UI or internal triggers)
-app.post("/api/emergencies/confirm", (req, res) => {
+app.post("/api/emergencies/confirm", (req, res) => { logEmergencyAction("CONFIRM", req.body);
   try {
     const { responder } = z.object({ responder: z.string().optional().default("Regional Trauma Center") }).parse(req.body);
     const safeResponder = xss(responder);
@@ -612,7 +651,7 @@ app.post("/api/emergencies/confirm", (req, res) => {
 });
 
 // API: Reset Confirmation Status (to begin a fresh monitoring sequence)
-app.post("/api/emergencies/confirmation-reset", (req, res) => {
+app.post("/api/emergencies/confirmation-reset", (req, res) => { logEmergencyAction("CANCEL", req.body);
   lastConfirmation = { confirmed: false, responder: "", timestamp: 0 };
   res.json({ success: true });
 });
@@ -714,10 +753,10 @@ app.post("/api/twilio/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
   
   if (isDrivingModeActive) {
-    twiml.say("Bob is driving and will reach to you later.");
+    twiml.say("The driver is currently operating a vehicle and will reach out to you later.");
     twiml.hangup();
   } else {
-    twiml.say("Connecting you to Bob.");
+    twiml.say("Connecting you to the driver.");
     if (activeUserPhone) {
       twiml.dial(activeUserPhone);
     } else {
@@ -730,18 +769,31 @@ app.post("/api/twilio/voice", (req, res) => {
   res.send(twiml.toString());
 });
 
-app.post("/api/sos/send-report", async (req, res) => {
+
+const idempotencyCache = new Set<string>();
+function checkIdempotency(req: any) {
+  const key = req.headers["x-idempotency-key"] || req.body?.idempotencyKey;
+  if (key) {
+    if (idempotencyCache.has(key)) return true;
+    idempotencyCache.add(key);
+    setTimeout(() => idempotencyCache.delete(key), 60000);
+  }
+  return false;
+}
+
+app.post("/api/sos/send-report", async (req, res) => { logEmergencyAction("REPORT_SENT", req.body);
   try {
     const { responder, logs, medicalInfo } = z.object({
       responder: z.string().min(1),
-      logs: z.array(z.any()).optional(),
-      medicalInfo: z.record(z.any()).optional()
+      logs: z.array(z.object({ timestamp: z.string().or(z.number()), message: z.string(), type: z.string().optional() })).optional(),
+      medicalInfo: z.object({ bloodType: z.string().optional(), allergies: z.string().optional(), conditions: z.string().optional(), medications: z.string().optional(), emergencyContacts: z.array(z.object({ name: z.string(), number: z.string(), relation: z.string() })).optional() }).optional()
     }).parse(req.body);
+
     const safeResponder = xss(responder);
 
     try {
       const doc = new PDFDocument();
-      const buffers: Buffer[] = [];
+      const buffers = [];
       doc.on('data', buffers.push.bind(buffers));
       
       // Generate PDF content
@@ -756,36 +808,45 @@ app.post("/api/sos/send-report", async (req, res) => {
       doc.moveDown();
       doc.fontSize(16).text("Recent Accident Logs:");
       doc.fontSize(12);
-      (logs || []).forEach((log: any) => {
+      (logs || []).forEach((log) => {
         const msg = typeof log.message === 'string' ? xss(log.message) : '';
         doc.text(`[${new Date(log.timestamp).toLocaleString()}] ${msg}`);
       });
       
       doc.end();
-
       doc.on('end', async () => {
         const pdfData = Buffer.concat(buffers);
         const reportId = crypto.randomUUID();
-        reportStore.set(reportId, pdfData);
-
-        // Clean up report after 12 hours
-        setTimeout(() => reportStore.delete(reportId), 12 * 60 * 60 * 1000);
-
         let reportUrl = "";
         try {
+          if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+            const { data: uploadData, error: uploadError } = await supabase.storage
+              .from("reports")
+              .upload(`${reportId}.pdf`, pdfData, { contentType: "application/pdf" });
+            if (!uploadError) {
+              const { data: { signedUrl } } = await supabase.storage
+                .from("reports")
+                .createSignedUrl(`${reportId}.pdf`, 12 * 60 * 60);
+              reportUrl = signedUrl;
+            }
+          }
+          if (!reportUrl) {
+            reportStore.set(reportId, pdfData);
+            setTimeout(() => reportStore.delete(reportId), 12 * 60 * 60 * 1000);
+            const hostUrl = `${req.headers["x-forwarded-proto"] || req.protocol}://${req.get("host")}`;
+            reportUrl = `${hostUrl}/api/report/${reportId}.pdf`;
+          }
+
           const client = getTwilio();
           const from = process.env.TWILIO_FROM_NUMBER;
-          const hostUrl = `${req.headers['x-forwarded-proto'] || req.protocol}://${req.get('host')}`;
-          reportUrl = `${hostUrl}/api/report/${reportId}.pdf`;
-
           await client.messages.create({
-            body: `RoadSOS: Victim's Medical & Accident Logs PDF Report available here: ${reportUrl}`,
+            body: `RoadSOS Critical Update: Medical Information and Incident Report available at: ${reportUrl}`,
             from,
             to: safeResponder
           });
           res.json({ success: true, reportId, reportUrl });
-        } catch (err: any) {
-          if (err.message && err.message.includes("Authenticate")) {
+        } catch (err) {
+          if (err.message && (err.message.includes("Authenticate") || err.message.includes("credentials"))) {
              console.error("Twilio report send error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
              res.status(500).json({ error: err.message });
           } else if (err.message && (err.message.includes("unverified") || err.message.includes("Trial account"))) {
@@ -797,12 +858,12 @@ app.post("/api/sos/send-report", async (req, res) => {
           }
         }
       });
-    } catch (err: any) {
+    } catch (err) {
       res.status(500).json({ error: err.message });
     }
   } catch (zErr) {
     if (zErr instanceof z.ZodError) return res.status(400).json({ error: "Invalid input" });
-    res.status(500).json({ error: "Validation Error" });
+    res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -817,6 +878,24 @@ app.get("/api/report/:id.pdf", (req, res) => {
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const logEmergencyAction = async (action: string, payload: any) => {
+  if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    try {
+      const logEntry = {
+        serialized_payload: JSON.stringify(payload || {}),
+        facility_name: "RoadSOS System",
+        lat: 0,
+        lng: 0,
+        injury_tag: action
+      };
+      await supabase.from("emergency_logs").insert([logEntry]);
+    } catch (e) {
+      console.error("Failed to log emergency action", e);
+    }
+  }
+};
+
 
 // Twilio Configuration
 let twilioClient: twilio.Twilio | null = null;
@@ -886,7 +965,7 @@ app.get("/api/health/traffic", async (req, res) => {
 });
 
 app.get("/api/config/twilio", (req, res) => {
-  res.json({ phoneNumber: process.env.TWILIO_FROM_NUMBER || "+1234567890" });
+  res.json({ phoneNumber: process.env.TWILIO_FROM_NUMBER });
 });
 
 // API: Twilio Diagnostics
@@ -927,7 +1006,7 @@ app.get("/api/diagnostics/twilio", (req, res) => {
 app.post("/api/emergencies/log", async (req, res) => {
   try {
     const { details, location, type } = z.object({
-      details: z.record(z.any()).optional(),
+      details: z.record(z.string().or(z.number()).or(z.boolean()).or(z.null())).optional(),
       location: z.object({ lat: z.number(), lng: z.number() }).optional(),
       type: z.string().optional()
     }).parse(req.body);
@@ -999,7 +1078,8 @@ app.post("/api/ai/voice-process", async (req, res) => {
 });
 
 // API: Bulk SMS Notify
-app.post("/api/sos/notify", async (req, res) => {
+app.post("/api/sos/notify", async (req, res) => { logEmergencyAction("NOTIFY_SMS", req.body);
+  if (checkIdempotency(req)) return res.json({ success: true, cached: true });
   // Reset confirmation state upon new notify
   lastConfirmation = { confirmed: false, responder: "", timestamp: 0 };
   try {
@@ -1060,7 +1140,8 @@ app.post("/api/sos/notify", async (req, res) => {
 });
 
 // API: Twilio Distress Call (NEON)
-app.post("/api/sos/call-neon", async (req, res) => {
+app.post("/api/sos/call-neon", async (req, res) => { logEmergencyAction("CALL_NEON", req.body);
+  if (checkIdempotency(req)) return res.json({ success: true, cached: true });
   try {
     const { to, patientName } = z.object({
       to: z.string().optional().default("+916361892311"),
@@ -1138,7 +1219,8 @@ app.post("/api/twilio/call-neon-gather", (req, res) => {
 });
 
 // API: Initiate Call (HELP)
-app.post("/api/sos/call-initiate", async (req, res) => {
+app.post("/api/sos/call-initiate", async (req, res) => { logEmergencyAction("CALL_INITIATE", req.body);
+  if (checkIdempotency(req)) return res.json({ success: true, cached: true });
   try {
     const { to, message, host } = z.object({
       to: z.string().optional().default("+917892375787"),
@@ -1196,7 +1278,7 @@ app.post("/api/ai/voice-agent", async (req, res) => {
     const { transcript, location, history } = z.object({
       transcript: z.string().optional(),
       location: z.object({ lat: z.number(), lng: z.number() }).optional(),
-      history: z.array(z.any()).optional()
+      history: z.array(z.object({ role: z.string(), parts: z.array(z.object({ text: z.string() })) })).optional()
     }).parse(req.body);
     const safeTranscript = xss(transcript || "");
     const cleanTranscript = safeTranscript.trim();
@@ -1473,7 +1555,7 @@ app.post("/api/places/nearby", async (req, res) => {
       return res.status(500).json({ error: "Google Maps API key not configured on server" });
     }
     
-    const body = z.record(z.any()).parse(req.body);
+    const body = req.body;
     
     // The FieldMask could be sent via headers from client or we hardcode a generous one.
     const rawMask = req.headers['x-goog-fieldmask'] as string;
@@ -1508,7 +1590,7 @@ app.post("/api/places/search", async (req, res) => {
       return res.status(500).json({ error: "Google Maps API key not configured on server" });
     }
     
-    const body = z.record(z.any()).parse(req.body);
+    const body = req.body;
     const rawMask = req.headers['x-goog-fieldmask'] as string;
     const fieldMask = rawMask ? xss(rawMask) : "places.displayName,places.location,places.formattedAddress";
     
