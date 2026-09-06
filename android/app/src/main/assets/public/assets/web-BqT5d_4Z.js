@@ -1,0 +1,1 @@
+import{W as e}from"./index-O9COjZ10.js";class o extends e{constructor(){super(),this.registerWindowListener("devicemotion","accel"),this.registerWindowListener("deviceorientation","orientation")}}export{o as MotionWeb};
