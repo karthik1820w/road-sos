@@ -27,7 +27,7 @@ import TripHistory from './components/TripHistory';
 import { PermissionsModal } from './components/PermissionsModal';
 import { EmergencySOSModal } from './components/EmergencySOSModal';
 import { GForceScatterPlot } from './components/GForceScatterPlot';
-import { raiseIncident, observeIncident, cancelIncident, closeIncident, contactsFromProfile, flushPendingIncidents, openScheme, getDeviceToken, type Incident, type IncidentKind, type DispatchOutcome } from './services/incidentService';
+import { raiseIncident, observeIncident, observeDrivingMode, cancelIncident, closeIncident, contactsFromProfile, flushPendingIncidents, openScheme, getDeviceToken, type Incident, type IncidentKind, type DispatchOutcome } from './services/incidentService';
 import { CrashDetector, summarizeVerdict, type CrashVerdict } from './safety/crashDetector';
 import { SafetyWordMatcher, PorcupineWakeWordEngine, loadSafetyWord, saveSafetyWord, validateSafetyWord, type StoredSafetyWord } from './safety/wakeWord';
 import { backgroundService } from './services/backgroundService';
@@ -240,6 +240,7 @@ export default function App() {
     engine.onStatus((st) => setWakeEngineStatus(st === 'listening' ? 'porcupine (offline)' : `porcupine ${st}`));
     engine.onResult((label) => {
       if (offlineMatcher.feed(label, true).triggered && !isBroadcastingRef.current) {
+        forceDrivingModeOff('distress_word');
         saveLogEntry(`Safety word ${label} detected offline x3`, userLocationRef.current);
         raiseSOS('SAFETY_WORD', `Safety word "${label}" spoken 3 times (offline engine)`, { silent: true });
       }
@@ -266,6 +267,49 @@ export default function App() {
   useEffect(() => {
     isDrivingModeRef.current = isDrivingMode;
   }, [isDrivingMode]);
+
+  const forceDrivingModeOff = async (reason: 'crash_detected' | 'manual_sos' | 'distress_word' | 'emergency_confirmed') => {
+    if (!isDrivingModeRef.current) return;
+    console.log(`[DrivingMode] Safety auto-disable triggered: ${reason}`);
+    setIsDrivingMode(false);
+    isDrivingModeRef.current = false;
+    speakNotification("Driving mode disabled — emergency response active.");
+
+    try {
+      await executeWithOfflineFallback('/api/status/driving', 'POST', {
+        active: false,
+        reason,
+        name: medicalInfoRef.current?.name,
+        phone: userPhoneRef.current,
+      });
+    } catch (e) {
+      console.warn("[DrivingMode] Failed to sync auto-disable status:", e);
+    }
+  };
+  const forceDrivingModeOffRef = useRef(forceDrivingModeOff);
+  useEffect(() => { forceDrivingModeOffRef.current = forceDrivingModeOff; }, [forceDrivingModeOff]);
+
+  // Real-time socket sync: driving_mode:forced_off & driving_mode:changed
+  useEffect(() => {
+    const unsub = observeDrivingMode(
+      (data) => {
+        if (isDrivingModeRef.current) {
+          console.log(`[DrivingMode] Socket push received: driving_mode:forced_off (${data.reason})`);
+          setIsDrivingMode(false);
+          isDrivingModeRef.current = false;
+          speakNotification("Driving mode disabled — emergency response active.");
+        }
+      },
+      (data) => {
+        const myToken = getDeviceToken();
+        if (data.userId === myToken && typeof data.active === 'boolean' && data.active !== isDrivingModeRef.current) {
+          setIsDrivingMode(data.active);
+          isDrivingModeRef.current = data.active;
+        }
+      }
+    );
+    return unsub;
+  }, []);
 
   const toggleDrivingMode = async () => {
     const newState = !isDrivingModeRef.current;
@@ -331,7 +375,7 @@ export default function App() {
     }
 
     try {
-      await executeWithOfflineFallback('/api/status/driving', 'POST', { active: newState, phone: userPhone });
+      await executeWithOfflineFallback('/api/status/driving', 'POST', { active: newState, phone: userPhone, name: medicalInfo.name });
       
       try {
         const res = await fetch('/api/config/twilio');
@@ -359,12 +403,23 @@ export default function App() {
 
   useEffect(() => {
     // Initial sync
-    executeWithOfflineFallback('/api/status/driving', 'POST', { active: isDrivingMode, phone: userPhone }).catch(e => {
+    executeWithOfflineFallback('/api/status/driving', 'POST', { active: isDrivingMode, phone: userPhone, name: medicalInfo.name }).catch(e => {
         // Suppress initial failed to fetch if server is just starting up, 
         // to avoid noisy console errors on hot reloads.
         console.warn("Initial driving sync pending server availability.");
     });
   }, [userPhone]);
+
+  // Re-sync driver name to server immediately if updated while driving mode is active
+  useEffect(() => {
+    if (isDrivingModeRef.current && medicalInfo.name) {
+      executeWithOfflineFallback('/api/status/driving', 'POST', {
+        active: true,
+        phone: userPhone,
+        name: medicalInfo.name,
+      }).catch(() => {});
+    }
+  }, [medicalInfo.name, userPhone]);
 
   const [showDrivingSimulator, setShowDrivingSimulator] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(() => {
@@ -667,6 +722,11 @@ export default function App() {
    * and falls back to the phone's own SMS/112 when the server path fails.
    */
   const raiseSOS = async (kind: IncidentKind, reason: string, opts: { silent?: boolean; verdict?: CrashVerdict | null; extraContacts?: string[] } = {}) => {
+    const triggerReason = kind === 'CRASH' ? 'crash_detected'
+      : kind === 'SAFETY_WORD' ? 'distress_word'
+      : 'manual_sos';
+    forceDrivingModeOff(triggerReason);
+
     if (isBroadcastingRef.current) return null;
     isBroadcastingRef.current = true;
     if (!opts.silent) setIsSosModalOpen(true);
@@ -733,7 +793,10 @@ export default function App() {
   };
 
   // Backwards-compatible wrappers used across the voice command handlers
-  const executeNeonDistress = () => raiseSOS('SAFETY_WORD', `Safety word "${safetyWord}" spoken 3 times`, { silent: true });
+  const executeNeonDistress = () => {
+    forceDrivingModeOff('distress_word');
+    return raiseSOS('SAFETY_WORD', `Safety word "${safetyWord}" spoken 3 times`, { silent: true });
+  };
   const executeDistressBroadcast = (reason: string, silent: boolean = false) => raiseSOS(reason.toLowerCase().includes('help') ? 'VOICE_HELP' : 'MANUAL_SOS', reason, { silent });
   const executeSecretDistressBroadcast = () => raiseSOS('MANUAL_SOS', 'SOS button held for 5 seconds', { silent: true });
 
@@ -923,6 +986,7 @@ export default function App() {
 
   // Safety Verification Logic
   const startSafetyVerification = (verdict?: CrashVerdict) => {
+    forceDrivingModeOff('crash_detected');
     if (isBroadcastingRef.current || isEmergencyRef.current || isDistressPendingRef.current || isSafetyCheckingRef.current) return;
     const timeoutS = verdict?.probeTimeoutS ?? 20;
     pendingVerdictRef.current = verdict || null;
@@ -1006,6 +1070,7 @@ export default function App() {
   };
 
   const triggerSOS = () => {
+    forceDrivingModeOff('manual_sos');
     if (!isMonitoring) {
       runMLRecovery();
       return;
@@ -1509,6 +1574,7 @@ export default function App() {
         return;
       }
       console.log("[Crash Detection] verdict", summarizeVerdict(verdict));
+      forceDrivingModeOff('crash_detected');
       startSafetyVerification(verdict);
     });
 
@@ -1516,6 +1582,9 @@ export default function App() {
       motionWatchId = await hardwareService.watchMotion((sample) => {
         detector.pushMotion(sample);
         const g = Math.sqrt(sample.ax ** 2 + sample.ay ** 2 + sample.az ** 2) / 9.81;
+        if (g > 8.0) {
+          forceDrivingModeOff('crash_detected');
+        }
         const now = Date.now();
         if (now - lastStateUpdate > 250) {
           lastStateUpdate = now;
@@ -1779,6 +1848,7 @@ export default function App() {
           {isChatbotModalOpen && (
             <ChatbotModal 
               key="chatbot-modal"
+              userName={medicalInfo.name}
               onClose={() => setIsChatbotModalOpen(false)}
               userLocation={userLocation || undefined}
               trafficData={trafficUpdate}

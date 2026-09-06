@@ -377,7 +377,8 @@ function renderRouteCard(routeResult: any) {
     ).join('')}`;
 };
 
-function buildSystemPrompt(isRoute: boolean = false) {
+function buildSystemPrompt(isRoute: boolean = false, userName?: string) {
+  const driverName = userName && userName.trim().length > 0 ? userName.trim() : 'the driver';
   const R = (window as any)._lastRoute;
   const routeSection = (isRoute && R) ? `
 === PRECISE NAVIGATION DATA ===
@@ -461,8 +462,8 @@ then ask me again — I'll give you accurate local conditions."
 ===================
 `;
 
-  return `You are Road SOS Assistant, an intelligent road safety, traffic, and personal travel assistant for Bob.
-When Bob replies to your initial greeting (like "I am good"), you should casually ask him: "Where do you want to go today?" or "What's your plan for today?" to start helping him travel.
+  return `You are Road SOS Assistant, an intelligent road safety, traffic, and personal travel assistant for ${driverName}.
+When ${driverName} replies to your initial greeting (like "I am good"), you should casually ask: "Where do you want to go today?" or "What's your plan for today?" to start helping them travel.
 
 YOU CAN ANSWER:
 - General knowledge questions on any topic
@@ -477,7 +478,7 @@ VOICE RESPONSE RULES:
 - Keep answers to 1–2 short conversational sentences MAX.
 - No bullet points, no markdown, no asterisks — plain spoken English
 - Never say you are an AI, a language model, or that you have a brain
-- Use a friendly, natural tone. Address the user as Bob casually if appropriate.
+- Use a friendly, natural tone. Address the user casually if appropriate.
 - If you truly cannot answer, say: "I'm not sure about that, but I can
   help with road safety and traffic questions."
 
@@ -529,6 +530,7 @@ interface ChatbotModalProps {
   onToggleTraffic?: (state: boolean) => void;
   onFetchTrafficUpdates?: (locationName?: string) => void;
   initialGreeting?: string;
+  userName?: string;
 }
 
 export const ChatbotModal: React.FC<ChatbotModalProps> = ({ 
@@ -539,7 +541,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
   onMapNearestHospital,
   onToggleTraffic,
   onFetchTrafficUpdates,
-  initialGreeting = "How can I help?"
+  initialGreeting = "How can I help?",
+  userName
 }) => {
   const stateRef = useRef<'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'ERROR'>('IDLE');
   const [state, _setState] = useState<'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'ERROR'>('IDLE');
@@ -816,7 +819,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
 
       let aiReply;
       try {
-          const sysP = buildSystemPrompt(true);
+          const sysP = buildSystemPrompt(true, userName);
           aiReply = await callGemini(navPrompt, sysP);
       } catch(e) {
           aiReply = `${result.confirmMsg} `
@@ -870,7 +873,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       
       const historyContextPayload = conversationHistory.slice(-7, -1); // skip the latest user query which was just pushed
 
-      const systemPrompt = buildSystemPrompt();
+      const systemPrompt = buildSystemPrompt(false, userName);
       const reply        = await callGemini(text, systemPrompt, historyContextPayload);
       
       conversationHistory.push({ role: 'assistant', text: reply });

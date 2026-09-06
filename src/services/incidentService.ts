@@ -144,7 +144,7 @@ async function safeJson(res: Response) { try { return await res.json(); } catch 
 // ───────────── live updates ─────────────
 
 let socket: Socket | null = null;
-function getSocket() {
+export function getSocket() {
   if (!socket) socket = io({ reconnection: true, reconnectionDelay: 1000, reconnectionAttempts: Infinity });
   return socket;
 }
@@ -172,6 +172,27 @@ export function observeIncident(id: string, onUpdate: (incident: Incident) => vo
     s.off('incident:update', handler);
     s.off('connect', rejoin);
     s.emit('incident:leave', id);
+  };
+}
+
+export function observeDrivingMode(
+  onForcedOff: (data: { userId?: string; active: boolean; reason: string }) => void,
+  onChanged?: (data: { userId?: string; active: boolean; userName?: string; phone?: string }) => void,
+): () => void {
+  const s = getSocket();
+  const token = getDeviceToken();
+  s.emit('user:join', token);
+  s.on('driving_mode:forced_off', onForcedOff);
+  if (onChanged) s.on('driving_mode:changed', onChanged);
+
+  const rejoin = () => s.emit('user:join', token);
+  s.on('connect', rejoin);
+
+  return () => {
+    s.off('driving_mode:forced_off', onForcedOff);
+    if (onChanged) s.off('driving_mode:changed', onChanged);
+    s.off('connect', rejoin);
+    s.emit('user:leave', token);
   };
 }
 

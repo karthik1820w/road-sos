@@ -177,12 +177,15 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // ───────────────────────────── Engine ─────────────────────────────
 
+import type { DrivingModeStore } from './drivingMode.js';
+
 export interface EngineDeps {
   store: IncidentStore;
   io?: SocketServer;
   getTwilio: () => twilio.Twilio; // throws when not configured
   fromNumber?: string;
   now?: () => number;
+  drivingModeStore?: DrivingModeStore;
 }
 
 export class IncidentEngine {
@@ -226,6 +229,15 @@ export class IncidentEngine {
       reportToken: signReportToken(id),
     };
     await this.deps.store.save(incident);
+
+    // Auto-disable driving mode immediately on server when any emergency incident is created
+    if (this.deps.drivingModeStore && input.deviceToken) {
+      const reason = input.kind === 'CRASH' ? 'crash_detected' : (input.kind === 'SAFETY_WORD' ? 'distress_word' : 'manual_sos');
+      this.deps.drivingModeStore.disable(input.deviceToken, reason).catch(() => {});
+      this.deps.io?.to(`user:${input.deviceToken}`).emit('driving_mode:forced_off', { userId: input.deviceToken, active: false, reason });
+      this.deps.io?.emit('driving_mode:forced_off', { userId: input.deviceToken, active: false, reason });
+    }
+
     if (idempotencyKey) {
       this.idempotency.set(idempotencyKey, id);
       setTimeout(() => this.idempotency.delete(idempotencyKey), 10 * 60 * 1000).unref?.();

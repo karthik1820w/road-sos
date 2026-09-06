@@ -11,6 +11,7 @@ import cookieParser from "cookie-parser";
 import { z } from "zod";
 import xss from "xss";
 import { IncidentEngine, MemoryIncidentStore, SupabaseMirroredStore, createIncidentRouter } from "./incidents.js";
+import { createDrivingRouter, MemoryDrivingModeStore, SupabaseMirroredDrivingModeStore } from "./drivingMode.js";
 
 dotenv.config();
 
@@ -607,81 +608,26 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
   }
 });
 
-// Driving-mode auto-reply (Feature 6 — still fundamentally single-tenant because Twilio's
-// incoming-call webhook carries no caller-supplied device identity to key off of; a real
-// per-user rewrite needs either per-user Twilio numbers or SIP routing metadata. Until then,
-// this at least requires the SAME device-token proof of ownership already used by the
-// incident engine (api/incidents.ts) to change the state, instead of leaving an open,
-// unauthenticated endpoint that lets anyone silently redirect another user's incoming calls
-// to an arbitrary phone number.
-interface DrivingState { isDrivingModeActive: boolean; phone: string; updatedAt: number }
-const drivingStateByDevice = new Map<string, DrivingState>();
-let mostRecentDeviceToken: string | null = null; // last device to update wins — matches prior single-tenant behavior
-
-// Periodically forget stale device state so the map can't grow unbounded.
-setInterval(() => {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  for (const [token, state] of drivingStateByDevice) {
-    if (state.updatedAt < cutoff) drivingStateByDevice.delete(token);
-  }
-}, 60 * 60 * 1000).unref?.();
-
-app.post("/api/status/driving", (req, res) => {
-  try {
-    const deviceToken = req.header("x-device-token");
-    if (!deviceToken || deviceToken.length < 16) {
-      return res.status(401).json({ error: "Missing device token" });
-    }
-    const { active, phone } = z.object({ active: z.boolean().optional(), phone: z.string().optional() }).parse(req.body);
-    const existing = drivingStateByDevice.get(deviceToken);
-    const nextState: DrivingState = {
-      isDrivingModeActive: !!active,
-      phone: phone ? xss(phone) : existing?.phone || "",
-      updatedAt: Date.now(),
-    };
-    drivingStateByDevice.set(deviceToken, nextState);
-    mostRecentDeviceToken = deviceToken;
-    res.json({ success: true, isDrivingModeActive: nextState.isDrivingModeActive });
-  } catch (err) {
-    if (err instanceof z.ZodError) return res.status(400).json({ error: "Invalid input" });
-    return res.status(500).json({ error: "Internal Error" });
-  }
-});
-
-app.post("/api/twilio/voice", twilio.webhook({ validate: process.env.NODE_ENV === "production" }), (req, res) => {
-  const twiml = new twilio.twiml.VoiceResponse();
-  // NOTE: Twilio's webhook doesn't tell us which app user is being called, so — same
-  // limitation as before — we can only act on the most recently active device's state.
-  // This is documented single-tenant behavior, not a silent assumption: a real fix needs
-  // per-user Twilio numbers so this handler can look up state by the dialed "To" number
-  // instead of a process-wide "most recent" pointer.
-  const state = mostRecentDeviceToken ? drivingStateByDevice.get(mostRecentDeviceToken) : undefined;
-  if (state?.isDrivingModeActive) {
-    twiml.say("The driver is currently operating a vehicle and will reach out to you later.");
-    twiml.hangup();
-  } else if (state?.phone) {
-    twiml.say("Connecting you to the driver.");
-    twiml.dial(state.phone);
-  } else {
-    twiml.say("The driver is not available right now. Please try again later.");
-    twiml.hangup();
-  }
-  res.type('text/xml');
-  res.send(twiml.toString());
-});
-
-// ── Feature 2: incident engine (multi-channel SOS with acknowledgement) ──
+// ── Feature 6: Real-time per-user driving mode with safety auto-disable ──
 const supabaseConfigured = !!(process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY));
 const supabase = supabaseConfigured
   ? createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY!)
   : null;
 
+const drivingStore = supabase && process.env.SUPABASE_SERVICE_ROLE_KEY
+  ? new SupabaseMirroredDrivingModeStore(supabase)
+  : new MemoryDrivingModeStore();
+
+app.use(createDrivingRouter({ store: drivingStore, io, jwtSecret: process.env.JWT_SECRET }));
+
+// ── Feature 2: incident engine (multi-channel SOS with acknowledgement) ──
 const incidentStore = supabase && process.env.SUPABASE_SERVICE_ROLE_KEY ? new SupabaseMirroredStore(supabase) : new MemoryIncidentStore();
 const incidentEngine = new IncidentEngine({
   store: incidentStore,
   io,
   getTwilio,
   fromNumber: process.env.TWILIO_FROM_NUMBER,
+  drivingModeStore: drivingStore,
 });
 app.use(createIncidentRouter(incidentEngine, incidentStore, io));
 
