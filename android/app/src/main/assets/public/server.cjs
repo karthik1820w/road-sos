@@ -5,6 +5,9 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -27,231 +30,724 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+// api/auth.ts
+var auth_exports = {};
+__export(auth_exports, {
+  authenticateToken: () => authenticateToken,
+  default: () => auth_default
+});
+var import_express2, import_bcryptjs, import_jsonwebtoken, import_express_rate_limit, import_supabase_js, import_zod2, import_xss2, import_crypto2, router, _supabase, getSupabase, supabase, getJwtSecret, JWT_EXPIRES_IN, emailPasswordSchema, tokenSchema, resetPasswordSchema, loginLimiter, registerLimiter, resetLimiter, authenticateToken, auth_default;
+var init_auth = __esm({
+  "api/auth.ts"() {
+    "use strict";
+    import_express2 = __toESM(require("express"), 1);
+    import_bcryptjs = __toESM(require("bcryptjs"), 1);
+    import_jsonwebtoken = __toESM(require("jsonwebtoken"), 1);
+    import_express_rate_limit = __toESM(require("express-rate-limit"), 1);
+    import_supabase_js = require("@supabase/supabase-js");
+    import_zod2 = require("zod");
+    import_xss2 = __toESM(require("xss"), 1);
+    import_crypto2 = __toESM(require("crypto"), 1);
+    router = import_express2.default.Router();
+    _supabase = null;
+    getSupabase = () => {
+      if (!_supabase) {
+        const url = process.env.SUPABASE_URL;
+        const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+        if (!url || !key) throw new Error("Supabase is not configured (SUPABASE_URL / key)");
+        _supabase = (0, import_supabase_js.createClient)(url, key);
+      }
+      return _supabase;
+    };
+    supabase = new Proxy({}, { get: (_t, prop) => getSupabase()[prop] });
+    getJwtSecret = () => {
+      const s = process.env.JWT_SECRET;
+      if (!s) throw new Error("JWT_SECRET environment variable is required");
+      return s;
+    };
+    JWT_EXPIRES_IN = "1h";
+    emailPasswordSchema = import_zod2.z.object({
+      email: import_zod2.z.string().email(),
+      password: import_zod2.z.string().min(8)
+    });
+    tokenSchema = import_zod2.z.object({
+      token: import_zod2.z.string().min(10)
+    });
+    resetPasswordSchema = import_zod2.z.object({
+      token: import_zod2.z.string().min(10),
+      newPassword: import_zod2.z.string().min(8)
+    });
+    loginLimiter = (0, import_express_rate_limit.default)({
+      windowMs: 15 * 60 * 1e3,
+      // 15 minutes
+      max: 5,
+      // Limit each IP to 5 login requests per `window`
+      handler: (req, res) => {
+        console.warn(`[Security Alert] Unusual traffic pattern: Too many login attempts from IP ${req.ip}`);
+        res.status(429).json({ error: "Too many login attempts from this IP, please try again after 15 minutes" });
+      },
+      standardHeaders: true,
+      legacyHeaders: false
+    });
+    registerLimiter = (0, import_express_rate_limit.default)({
+      windowMs: 60 * 60 * 1e3,
+      // 1 hour
+      max: 3,
+      // Limit each IP to 3 account creations per `window`
+      handler: (req, res) => {
+        console.warn(`[Security Alert] Unusual traffic pattern: Too many account creations from IP ${req.ip}`);
+        res.status(429).json({ error: "Too many account creations from this IP, please try again after 1 hour" });
+      },
+      standardHeaders: true,
+      legacyHeaders: false
+    });
+    resetLimiter = (0, import_express_rate_limit.default)({
+      windowMs: 60 * 60 * 1e3,
+      max: 5,
+      handler: (req, res) => {
+        console.warn(`[Security Alert] Too many password reset requests from IP ${req.ip}`);
+        res.status(429).json({ error: "Too many password reset requests from this IP, please try again after 1 hour" });
+      },
+      standardHeaders: true,
+      legacyHeaders: false
+    });
+    authenticateToken = (req, res, next) => {
+      const token = req.cookies?.token || req.headers["authorization"]?.split(" ")[1];
+      if (!token) return res.status(401).json({ error: "Access denied: No token provided" });
+      import_jsonwebtoken.default.verify(token, getJwtSecret(), (err, user) => {
+        if (err) return res.status(403).json({ error: "Access denied: Invalid or expired session" });
+        req.user = user;
+        next();
+      });
+    };
+    router.post("/register", registerLimiter, async (req, res) => {
+      try {
+        const { email, password } = emailPasswordSchema.parse(req.body);
+        const safeEmail = (0, import_xss2.default)(email);
+        const salt = await import_bcryptjs.default.genSalt(12);
+        const passwordHash = await import_bcryptjs.default.hash(password, salt);
+        const verificationToken = import_crypto2.default.randomBytes(32).toString("hex");
+        const { data: existingUser } = await supabase.from("app_users").select("id").eq("email", email).single();
+        if (existingUser) return res.status(409).json({ error: "Email already in use" });
+        const { error } = await supabase.from("app_users").insert([{
+          email,
+          password_hash: passwordHash,
+          is_verified: false,
+          verification_token: verificationToken
+        }]);
+        if (error) throw error;
+        console.log(`[Email Service] Verification link: http://localhost:3000/api/auth/verify?token=${verificationToken}`);
+        res.status(201).json({ message: "User registered successfully. Please verify your email." });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+    router.get("/verify", async (req, res) => {
+      try {
+        const { token } = tokenSchema.parse({ token: req.query.token });
+        const safeToken = (0, import_xss2.default)(token);
+        const { data: user, error } = await supabase.from("app_users").select("id, is_verified").eq("verification_token", safeToken).single();
+        if (error || !user) return res.status(400).json({ error: "Invalid or expired verification token" });
+        await supabase.from("app_users").update({ is_verified: true, verification_token: null }).eq("id", user.id);
+        res.send("Email successfully verified. You can now log in.");
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+    router.post("/login", loginLimiter, async (req, res) => {
+      try {
+        const { email, password } = emailPasswordSchema.parse(req.body);
+        const safeEmail = (0, import_xss2.default)(email);
+        console.log(`[Auth attempt] Login attempt for ${safeEmail} from IP: ${req.ip} or ${req.headers["x-forwarded-for"]}`);
+        const { data: user, error } = await supabase.from("app_users").select("id, password_hash, is_verified").eq("email", safeEmail).single();
+        if (error || !user) {
+          console.warn(`[Auth failure] Invalid email for ${safeEmail} from IP: ${req.ip}`);
+          return res.status(401).json({ error: "Invalid email or password" });
+        }
+        if (!user.is_verified) {
+        }
+        const validPassword = await import_bcryptjs.default.compare(password, user.password_hash);
+        if (!validPassword) {
+          console.warn(`[Auth failure] Invalid password for ${email} from IP: ${req.ip}`);
+          return res.status(401).json({ error: "Invalid email or password" });
+        }
+        console.log(`[Auth success] User ${email} logged in from IP: ${req.ip}`);
+        const token = import_jsonwebtoken.default.sign({ id: user.id, email: safeEmail }, getJwtSecret(), { expiresIn: JWT_EXPIRES_IN });
+        res.cookie("token", token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          maxAge: 36e5,
+          // 1h
+          sameSite: "strict"
+        });
+        res.json({ message: "Login successful" });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+    router.post("/forgot-password", resetLimiter, async (req, res) => {
+      try {
+        const schema = import_zod2.z.object({ email: import_zod2.z.string().email() });
+        const { email } = schema.parse(req.body);
+        const safeEmail = (0, import_xss2.default)(email);
+        const resetToken = import_crypto2.default.randomBytes(32).toString("hex");
+        const resetTokenExpires = new Date(Date.now() + 36e5).toISOString();
+        const { data: user, error } = await supabase.from("app_users").select("id").eq("email", safeEmail).single();
+        if (!error && user) {
+          await supabase.from("app_users").update({ reset_token: resetToken, reset_token_expires: resetTokenExpires }).eq("id", user.id);
+          console.log(`[Email Service] Password Reset link: http://localhost:3000/api/auth/reset-password?token=${resetToken}`);
+        }
+        res.json({ message: "If that email is registered, a password reset link has been sent." });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+    router.post("/reset-password", resetLimiter, async (req, res) => {
+      try {
+        const { token, newPassword } = resetPasswordSchema.parse(req.body);
+        const safeToken = (0, import_xss2.default)(token);
+        const { data: user, error } = await supabase.from("app_users").select("id, reset_token_expires").eq("reset_token", safeToken).single();
+        if (error || !user) return res.status(400).json({ error: "Invalid or expired reset token" });
+        if (new Date(user.reset_token_expires) < /* @__PURE__ */ new Date()) {
+          return res.status(400).json({ error: "Reset token has expired" });
+        }
+        const salt = await import_bcryptjs.default.genSalt(12);
+        const newPasswordHash = await import_bcryptjs.default.hash(newPassword, salt);
+        await supabase.from("app_users").update({
+          password_hash: newPasswordHash,
+          reset_token: null,
+          reset_token_expires: null
+        }).eq("id", user.id);
+        res.json({ message: "Password has been successfully reset. You can now log in." });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+    router.get("/me", authenticateToken, (req, res) => {
+      res.json({ user: req.user });
+    });
+    auth_default = router;
+  }
+});
+
 // api/index.ts
 var api_exports = {};
 __export(api_exports, {
   default: () => api_default
 });
 module.exports = __toCommonJS(api_exports);
-var import_express2 = __toESM(require("express"), 1);
+var import_helmet = __toESM(require("helmet"), 1);
+var import_express3 = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
 var import_supabase_js2 = require("@supabase/supabase-js");
 var import_genai = require("@google/genai");
 var import_dotenv = __toESM(require("dotenv"), 1);
-var import_twilio = __toESM(require("twilio"), 1);
+var import_twilio2 = __toESM(require("twilio"), 1);
 var import_http = require("http");
 var import_socket = require("socket.io");
-var import_pdfkit = __toESM(require("pdfkit"), 1);
 var import_cookie_parser = __toESM(require("cookie-parser"), 1);
-var import_zod2 = require("zod");
-var import_xss2 = __toESM(require("xss"), 1);
-var import_crypto2 = __toESM(require("crypto"), 1);
-var import_express_rate_limit2 = __toESM(require("express-rate-limit"), 1);
+var import_zod3 = require("zod");
+var import_xss3 = __toESM(require("xss"), 1);
 
-// api/auth.ts
+// api/incidents.ts
 var import_express = __toESM(require("express"), 1);
-var import_bcryptjs = __toESM(require("bcryptjs"), 1);
-var import_jsonwebtoken = __toESM(require("jsonwebtoken"), 1);
-var import_express_rate_limit = __toESM(require("express-rate-limit"), 1);
-var import_supabase_js = require("@supabase/supabase-js");
+var import_crypto = __toESM(require("crypto"), 1);
 var import_zod = require("zod");
 var import_xss = __toESM(require("xss"), 1);
-var import_crypto = __toESM(require("crypto"), 1);
-var router = import_express.default.Router();
-var SUPABASE_URL = process.env.SUPABASE_URL || "";
-var SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "";
-var supabase = (0, import_supabase_js.createClient)(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-var JWT_SECRET = process.env.JWT_SECRET || "fallback-secure-secret-do-not-use-in-production";
-var JWT_EXPIRES_IN = "1h";
-var emailPasswordSchema = import_zod.z.object({
-  email: import_zod.z.string().email(),
-  password: import_zod.z.string().min(8)
-});
-var tokenSchema = import_zod.z.object({
-  token: import_zod.z.string().min(10)
-});
-var resetPasswordSchema = import_zod.z.object({
-  token: import_zod.z.string().min(10),
-  newPassword: import_zod.z.string().min(8)
-});
-var loginLimiter = (0, import_express_rate_limit.default)({
-  windowMs: 15 * 60 * 1e3,
-  // 15 minutes
-  max: 5,
-  // Limit each IP to 5 login requests per `window`
-  handler: (req, res) => {
-    console.warn(`[Security Alert] Unusual traffic pattern: Too many login attempts from IP ${req.ip}`);
-    res.status(429).json({ error: "Too many login attempts from this IP, please try again after 15 minutes" });
-  },
-  standardHeaders: true,
-  legacyHeaders: false
-});
-var registerLimiter = (0, import_express_rate_limit.default)({
-  windowMs: 60 * 60 * 1e3,
-  // 1 hour
-  max: 3,
-  // Limit each IP to 3 account creations per `window`
-  handler: (req, res) => {
-    console.warn(`[Security Alert] Unusual traffic pattern: Too many account creations from IP ${req.ip}`);
-    res.status(429).json({ error: "Too many account creations from this IP, please try again after 1 hour" });
-  },
-  standardHeaders: true,
-  legacyHeaders: false
-});
-var resetLimiter = (0, import_express_rate_limit.default)({
-  windowMs: 60 * 60 * 1e3,
-  max: 5,
-  handler: (req, res) => {
-    console.warn(`[Security Alert] Too many password reset requests from IP ${req.ip}`);
-    res.status(429).json({ error: "Too many password reset requests from this IP, please try again after 1 hour" });
-  },
-  standardHeaders: true,
-  legacyHeaders: false
-});
-var authenticateToken = (req, res, next) => {
-  const token = req.cookies?.token || req.headers["authorization"]?.split(" ")[1];
-  if (!token) return res.status(401).json({ error: "Access denied: No token provided" });
-  import_jsonwebtoken.default.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: "Access denied: Invalid or expired session" });
-    req.user = user;
-    next();
-  });
+var import_twilio = __toESM(require("twilio"), 1);
+var import_pdfkit = __toESM(require("pdfkit"), 1);
+var import_qrcode = __toESM(require("qrcode"), 1);
+var TRANSITIONS = {
+  DETECTED: ["PROBING", "DISPATCHED", "CANCELLED"],
+  PROBING: ["DISPATCHED", "CANCELLED"],
+  DISPATCHED: ["ACKED", "CLOSED", "CANCELLED"],
+  ACKED: ["CLOSED"],
+  CLOSED: [],
+  CANCELLED: []
 };
-router.post("/register", registerLimiter, async (req, res) => {
-  try {
-    const { email, password } = emailPasswordSchema.parse(req.body);
-    const safeEmail2 = (0, import_xss.default)(email);
-    const salt = await import_bcryptjs.default.genSalt(12);
-    const passwordHash = await import_bcryptjs.default.hash(password, salt);
-    const verificationToken = import_crypto.default.randomBytes(32).toString("hex");
-    const { data: existingUser } = await supabase.from("app_users").select("id").eq("email", email).single();
-    if (existingUser) return res.status(409).json({ error: "Email already in use" });
-    const { error } = await supabase.from("app_users").insert([{
-      email,
-      password_hash: passwordHash,
-      is_verified: false,
-      verification_token: verificationToken
-    }]);
-    if (error) {
-      if (error.code === "42P01") {
-        return res.status(201).json({ message: "User registered (mocked, app_users table missing) Please verify email.", mock: true });
+function canTransition(from, to) {
+  return TRANSITIONS[from].includes(to);
+}
+var MemoryIncidentStore = class {
+  items = /* @__PURE__ */ new Map();
+  async get(id) {
+    return this.items.get(id);
+  }
+  async save(incident) {
+    this.items.set(incident.id, incident);
+  }
+  async findOpenByContact(phone) {
+    const digits = normalizePhone(phone);
+    return [...this.items.values()].filter((i) => i.state === "DISPATCHED" && i.contacts.some((c) => normalizePhone(c) === digits)).sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  }
+};
+var SupabaseMirroredStore = class extends MemoryIncidentStore {
+  constructor(supabase3) {
+    super();
+    this.supabase = supabase3;
+  }
+  async get(id) {
+    const local = await super.get(id);
+    if (local) return local;
+    const { data } = await this.supabase.from("incidents").select("payload").eq("id", id).maybeSingle();
+    if (data?.payload) {
+      const inc = data.payload;
+      await super.save(inc);
+      return inc;
+    }
+    return void 0;
+  }
+  async save(incident) {
+    await super.save(incident);
+    try {
+      await this.supabase.from("incidents").upsert({
+        id: incident.id,
+        state: incident.state,
+        kind: incident.kind,
+        lat: incident.location?.lat ?? null,
+        lng: incident.location?.lng ?? null,
+        created_at: new Date(incident.createdAt).toISOString(),
+        updated_at: new Date(incident.updatedAt).toISOString(),
+        payload: incident
+      });
+    } catch (e) {
+      console.warn("[Incidents] Supabase mirror failed:", e?.message);
+    }
+  }
+};
+function normalizePhone(raw) {
+  const trimmed = raw.replace(/[^\d+]/g, "");
+  if (trimmed.startsWith("+")) return trimmed;
+  if (/^0\d{10}$/.test(trimmed)) return `+91${trimmed.slice(1)}`;
+  if (/^\d{10}$/.test(trimmed)) return `+91${trimmed}`;
+  if (/^91\d{10}$/.test(trimmed)) return `+${trimmed}`;
+  return `+${trimmed}`;
+}
+function isValidE164(p) {
+  return /^\+[1-9]\d{7,14}$/.test(p);
+}
+var processSecret = null;
+var secret = () => {
+  const configured = process.env.INCIDENT_SIGNING_SECRET || process.env.JWT_SECRET;
+  if (configured) return configured;
+  if (!processSecret) {
+    processSecret = import_crypto.default.randomBytes(32).toString("hex");
+    console.warn(
+      "[Incidents] INCIDENT_SIGNING_SECRET and JWT_SECRET are both unset. Generated a random in-memory signing secret for this process only \u2014 report links will stop validating after any restart or across multiple instances. Set INCIDENT_SIGNING_SECRET in production."
+    );
+  }
+  return processSecret;
+};
+var signReportToken = (incidentId) => import_crypto.default.createHmac("sha256", secret()).update(incidentId).digest("hex").slice(0, 32);
+var mapsLink = (loc) => loc ? `https://www.google.com/maps?q=${loc.lat.toFixed(6)},${loc.lng.toFixed(6)}` : "location unavailable";
+function publicBaseUrl(req) {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/$/, "");
+  const proto = req.headers["x-forwarded-proto"] || req.protocol;
+  return `${proto}://${req.get("host")}`;
+}
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+var IncidentEngine = class {
+  constructor(deps) {
+    this.deps = deps;
+  }
+  idempotency = /* @__PURE__ */ new Map();
+  now() {
+    return this.deps.now ? this.deps.now() : Date.now();
+  }
+  emit(incident) {
+    this.deps.io?.to(`incident:${incident.id}`).emit("incident:update", publicView(incident));
+  }
+  async transition(incident, to, note) {
+    if (incident.state === to) return incident;
+    if (!canTransition(incident.state, to)) {
+      throw Object.assign(new Error(`Illegal transition ${incident.state} \u2192 ${to}`), { status: 409 });
+    }
+    incident.state = to;
+    incident.updatedAt = this.now();
+    incident.history.push({ state: to, at: incident.updatedAt, note });
+    await this.deps.store.save(incident);
+    this.emit(incident);
+    return incident;
+  }
+  async create(input, idempotencyKey) {
+    if (idempotencyKey && this.idempotency.has(idempotencyKey)) {
+      const existing = await this.deps.store.get(this.idempotency.get(idempotencyKey));
+      if (existing) return existing;
+    }
+    const id = import_crypto.default.randomUUID();
+    const t = this.now();
+    const incident = {
+      ...input,
+      id,
+      state: input.kind === "CRASH" ? "PROBING" : "DETECTED",
+      createdAt: t,
+      updatedAt: t,
+      deliveries: [],
+      history: [{ state: input.kind === "CRASH" ? "PROBING" : "DETECTED", at: t }],
+      reportToken: signReportToken(id)
+    };
+    await this.deps.store.save(incident);
+    if (idempotencyKey) {
+      this.idempotency.set(idempotencyKey, id);
+      setTimeout(() => this.idempotency.delete(idempotencyKey), 10 * 60 * 1e3).unref?.();
+    }
+    return incident;
+  }
+  async cancel(incident, note = "Cancelled by user") {
+    return this.transition(incident, "CANCELLED", note);
+  }
+  async close(incident) {
+    return this.transition(incident, "CLOSED");
+  }
+  async acknowledge(incident, by, via) {
+    if (incident.state === "ACKED" || incident.state === "CLOSED") return incident;
+    incident.ack = { by, at: this.now(), via };
+    await this.transition(incident, "ACKED", `Acknowledged by ${by} via ${via}`);
+    return incident;
+  }
+  /**
+   * Fan out SMS + voice call to every contact. Idempotent: calling twice on a
+   * DISPATCHED incident returns the current delivery table without re-sending.
+   */
+  async dispatch(incident, baseUrl) {
+    if (incident.state === "DISPATCHED" || incident.state === "ACKED") return incident;
+    if (incident.contacts.length === 0) {
+      throw Object.assign(new Error("NO_CONTACTS"), { status: 400 });
+    }
+    await this.transition(incident, "DISPATCHED", `Dispatching to ${incident.contacts.length} contact(s)`);
+    const reportUrl = `${baseUrl}/api/incidents/${incident.id}/report.pdf?t=${incident.reportToken}`;
+    const smsBody = buildSmsBody(incident, reportUrl);
+    const sayText = buildCallScript(incident);
+    await Promise.all(incident.contacts.map(async (to) => {
+      await this.sendWithRetry(incident, "sms", to, async (client) => {
+        const msg = await client.messages.create({
+          to,
+          from: this.deps.fromNumber,
+          body: smsBody,
+          statusCallback: `${baseUrl}/api/twilio/incidents/${incident.id}/status?channel=sms`
+        });
+        return msg.sid;
+      });
+      await this.sendWithRetry(incident, "call", to, async (client) => {
+        const gatherUrl = `${baseUrl}/api/twilio/incidents/${incident.id}/gather?to=${encodeURIComponent(to)}`;
+        const twiml = new import_twilio.default.twiml.VoiceResponse();
+        const gather = twiml.gather({ numDigits: 1, action: gatherUrl, method: "POST", timeout: 12 });
+        gather.say({ loop: 2 }, sayText);
+        twiml.say("No confirmation received. Goodbye.");
+        const call = await client.calls.create({
+          to,
+          from: this.deps.fromNumber,
+          twiml: twiml.toString(),
+          statusCallback: `${baseUrl}/api/twilio/incidents/${incident.id}/status?channel=call`,
+          statusCallbackEvent: ["initiated", "answered", "completed"]
+        });
+        return call.sid;
+      });
+    }));
+    incident.updatedAt = this.now();
+    await this.deps.store.save(incident);
+    this.emit(incident);
+    return incident;
+  }
+  async sendWithRetry(incident, channel, to, fn) {
+    const delivery = { id: import_crypto.default.randomUUID(), channel, to, status: "queued", attempts: 0, updatedAt: this.now() };
+    incident.deliveries.push(delivery);
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      delivery.attempts = attempt;
+      try {
+        if (!this.deps.fromNumber) throw new Error("TWILIO_FROM_NUMBER is not configured");
+        const client = this.deps.getTwilio();
+        delivery.sid = await fn(client);
+        delivery.status = "sent";
+        delivery.error = void 0;
+        delivery.updatedAt = this.now();
+        await this.deps.store.save(incident);
+        this.emit(incident);
+        return;
+      } catch (e) {
+        const msg = e?.message || String(e);
+        delivery.error = msg;
+        delivery.updatedAt = this.now();
+        const permanent = /Authenticate|credentials|unverified|Trial|not a valid phone|not configured|permission/i.test(msg);
+        if (permanent || attempt === maxAttempts) {
+          delivery.status = "failed";
+          console.error(`[Incident ${incident.id}] ${channel} \u2192 ${to} FAILED (${attempt}/${maxAttempts}): ${msg}`);
+          await this.deps.store.save(incident);
+          this.emit(incident);
+          return;
+        }
+        await sleep(600 * Math.pow(2, attempt - 1));
       }
-      throw error;
     }
-    console.log(`[Email Service] Verification link: http://localhost:3000/api/auth/verify?token=${verificationToken}`);
-    res.status(201).json({ message: "User registered successfully. Please verify your email." });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
-router.get("/verify", async (req, res) => {
-  try {
-    const { token } = tokenSchema.parse({ token: req.query.token });
-    const safeToken = (0, import_xss.default)(token);
-    const { data: user, error } = await supabase.from("app_users").select("id, is_verified").eq("verification_token", safeToken).single();
-    if (error || !user) return res.status(400).json({ error: "Invalid or expired verification token" });
-    await supabase.from("app_users").update({ is_verified: true, verification_token: null }).eq("id", user.id);
-    res.send("Email successfully verified. You can now log in.");
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  /** Twilio status callback → delivery row. */
+  async updateDeliveryStatus(incident, channel, sid, rawStatus) {
+    const d = incident.deliveries.find((x) => x.channel === channel && (sid ? x.sid === sid : true));
+    if (!d) return;
+    const s = rawStatus.toLowerCase();
+    if (channel === "sms") {
+      if (s === "delivered") d.status = "delivered";
+      else if (s === "failed" || s === "undelivered") {
+        d.status = "failed";
+        d.error = `Carrier status: ${s}`;
+      }
+    } else {
+      if (s === "in-progress" || s === "answered") d.status = "answered";
+      else if (s === "completed") {
+        if (d.status !== "answered") d.status = "no_answer";
+      } else if (s === "no-answer" || s === "busy") d.status = "no_answer";
+      else if (s === "failed" || s === "canceled") {
+        d.status = "failed";
+        d.error = `Call status: ${s}`;
+      }
+    }
+    d.updatedAt = this.now();
+    incident.updatedAt = d.updatedAt;
+    await this.deps.store.save(incident);
+    this.emit(incident);
   }
+};
+function buildSmsBody(incident, reportUrl) {
+  const who = incident.patient.name?.trim() || incident.patient.phone || "A RoadSOS user";
+  const kind = incident.kind === "CRASH" ? "possible road crash detected" : incident.kind === "SAFETY_WORD" ? "silent distress signal" : incident.kind === "MEDICAL" ? "medical emergency" : "emergency";
+  const conf = incident.confidence ? ` (${incident.confidence.toLowerCase()} confidence)` : "";
+  const loc = incident.address ? `${incident.address}
+${mapsLink(incident.location)}` : mapsLink(incident.location);
+  const med = [incident.patient.bloodGroup && `Blood: ${incident.patient.bloodGroup}`, incident.patient.allergies && `Allergies: ${incident.patient.allergies}`].filter(Boolean).join(" | ");
+  return [
+    `ROADSOS ALERT: ${who} \u2014 ${kind}${conf}.`,
+    `Location: ${loc}`,
+    med,
+    `Medical card: ${reportUrl}`,
+    `Reply 1 or press 1 on the call to confirm you are responding. Emergency: 112`
+  ].filter(Boolean).join("\n");
+}
+function buildCallScript(incident) {
+  const who = incident.patient.name?.trim() || "a Road S O S user";
+  const what = incident.kind === "CRASH" ? "may have been in a road accident and is not responding" : incident.kind === "SAFETY_WORD" ? "has sent a silent distress signal" : "needs urgent help";
+  const where = incident.address ? ` Location: ${incident.address}.` : incident.location ? ` Location has been sent to you by S M S.` : "";
+  return `Emergency alert from Road S O S. ${who} ${what}.${where} Press 1 to confirm you are responding.`;
+}
+function publicView(i) {
+  const { deviceToken, reportToken, ...rest } = i;
+  return rest;
+}
+async function renderIncidentPdf(incident) {
+  const qr = await import_qrcode.default.toBuffer(mapsLink(incident.location), { width: 220, margin: 1 });
+  return new Promise((resolve, reject) => {
+    const doc = new import_pdfkit.default({ size: "A4", margin: 48 });
+    const chunks = [];
+    doc.on("data", (c) => chunks.push(c));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+    doc.fontSize(22).text("RoadSOS Incident Handover", { align: "left" });
+    doc.fontSize(10).fillColor("#555").text(`Incident ${incident.id}`).text(`Generated ${(/* @__PURE__ */ new Date()).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST`);
+    doc.moveDown().fillColor("#000");
+    doc.fontSize(14).text("Patient");
+    doc.fontSize(11).text(`Name: ${incident.patient.name || "Unknown"}`).text(`Phone: ${incident.patient.phone || "Unknown"}`).text(`Blood group: ${incident.patient.bloodGroup || "Unknown"}`).text(`Allergies: ${incident.patient.allergies || "None recorded"}`).text(`Conditions: ${incident.patient.conditions || "None recorded"}`);
+    doc.moveDown();
+    doc.fontSize(14).text("Incident");
+    doc.fontSize(11).text(`Type: ${incident.kind}${incident.confidence ? ` \u2014 ${incident.confidence} confidence` : ""}`).text(`Reason: ${incident.reason}`).text(`Time: ${new Date(incident.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST`).text(`Location: ${incident.address || "\u2014"}`).text(incident.location ? `Coordinates: ${incident.location.lat.toFixed(6)}, ${incident.location.lng.toFixed(6)}` : "Coordinates: unavailable");
+    if (incident.sensorSummary) {
+      doc.moveDown(0.5).fontSize(12).text("Sensor snapshot");
+      doc.fontSize(10);
+      for (const [k, v] of Object.entries(incident.sensorSummary)) doc.text(`${k}: ${v}`);
+    }
+    const y = doc.y;
+    doc.image(qr, 380, 120, { width: 160 });
+    doc.fontSize(8).fillColor("#555").text("Scan for live map location", 380, 284, { width: 160, align: "center" }).fillColor("#000");
+    doc.y = Math.max(y, 300);
+    doc.moveDown();
+    doc.fontSize(14).text("Notification log");
+    doc.fontSize(10);
+    for (const h of incident.history) doc.text(`${new Date(h.at).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}  ${h.state}${h.note ? ` \u2014 ${h.note}` : ""}`);
+    for (const d of incident.deliveries) doc.text(`${new Date(d.updatedAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}  ${d.channel.toUpperCase()} \u2192 ${d.to}: ${d.status}${d.error ? ` (${d.error})` : ""}`);
+    doc.end();
+  });
+}
+var createSchema = import_zod.z.object({
+  kind: import_zod.z.enum(["CRASH", "MANUAL_SOS", "SAFETY_WORD", "VOICE_HELP", "MEDICAL"]),
+  reason: import_zod.z.string().min(1).max(300),
+  location: import_zod.z.object({ lat: import_zod.z.number().min(-90).max(90), lng: import_zod.z.number().min(-180).max(180), accuracyM: import_zod.z.number().optional() }).optional(),
+  address: import_zod.z.string().max(300).optional(),
+  confidence: import_zod.z.enum(["LOW", "MEDIUM", "HIGH"]).optional(),
+  sensorSummary: import_zod.z.record(import_zod.z.string(), import_zod.z.union([import_zod.z.number(), import_zod.z.string(), import_zod.z.boolean()])).optional(),
+  patient: import_zod.z.object({
+    name: import_zod.z.string().max(80).default(""),
+    phone: import_zod.z.string().max(20).optional(),
+    bloodGroup: import_zod.z.string().max(10).optional(),
+    allergies: import_zod.z.string().max(200).optional(),
+    conditions: import_zod.z.string().max(200).optional()
+  }),
+  contacts: import_zod.z.array(import_zod.z.string().min(7).max(20)).max(10)
 });
-router.post("/login", loginLimiter, async (req, res) => {
-  try {
-    const { email, password } = emailPasswordSchema.parse(req.body);
-    const safeEmail2 = (0, import_xss.default)(email);
-    console.log(`[Auth attempt] Login attempt for ${safeEmail2} from IP: ${req.ip} or ${req.headers["x-forwarded-for"]}`);
-    const { data: user, error } = await supabase.from("app_users").select("id, password_hash, is_verified").eq("email", safeEmail2).single();
-    if (error || !user) {
-      console.warn(`[Auth failure] Invalid email for ${safeEmail2} from IP: ${req.ip}`);
-      return res.status(401).json({ error: "Invalid email or password" });
+function createIncidentRouter(engine, store, io2) {
+  const router2 = import_express.default.Router();
+  const validateWebhooks = process.env.TWILIO_VALIDATE_WEBHOOKS ? process.env.TWILIO_VALIDATE_WEBHOOKS === "true" : process.env.NODE_ENV === "production";
+  const twilioGuard = import_twilio.default.webhook({
+    validate: validateWebhooks,
+    ...process.env.PUBLIC_BASE_URL ? { protocol: new URL(process.env.PUBLIC_BASE_URL).protocol.replace(":", ""), host: new URL(process.env.PUBLIC_BASE_URL).host } : {}
+  });
+  const requireOwner = async (req, res, next) => {
+    const incident = await store.get(req.params.id);
+    if (!incident) return res.status(404).json({ error: "Incident not found" });
+    const token = req.header("x-device-token");
+    if (!token || token !== incident.deviceToken) return res.status(403).json({ error: "Not the owning device" });
+    req.incident = incident;
+    next();
+  };
+  router2.post("/api/incidents", async (req, res) => {
+    try {
+      const deviceToken = req.header("x-device-token");
+      if (!deviceToken || deviceToken.length < 16) return res.status(401).json({ error: "Missing device token" });
+      const body = createSchema.parse(req.body);
+      const contacts = [...new Set(body.contacts.map(normalizePhone))].filter(isValidE164);
+      const incident = await engine.create({
+        deviceToken,
+        kind: body.kind,
+        reason: (0, import_xss.default)(body.reason),
+        location: body.location,
+        address: body.address ? (0, import_xss.default)(body.address) : void 0,
+        confidence: body.confidence,
+        sensorSummary: body.sensorSummary,
+        patient: {
+          name: (0, import_xss.default)(body.patient.name),
+          phone: body.patient.phone ? normalizePhone(body.patient.phone) : void 0,
+          bloodGroup: body.patient.bloodGroup ? (0, import_xss.default)(body.patient.bloodGroup) : void 0,
+          allergies: body.patient.allergies ? (0, import_xss.default)(body.patient.allergies) : void 0,
+          conditions: body.patient.conditions ? (0, import_xss.default)(body.patient.conditions) : void 0
+        },
+        contacts
+      }, req.header("idempotency-key") || void 0);
+      res.status(201).json({ incident: publicView(incident), warnings: contacts.length === 0 ? ["NO_VALID_CONTACTS"] : [] });
+    } catch (e) {
+      if (e instanceof import_zod.z.ZodError) return res.status(400).json({ error: "Invalid input", issues: e.issues });
+      res.status(e.status || 500).json({ error: e.message });
     }
-    if (!user.is_verified) {
+  });
+  router2.get("/api/incidents/:id", async (req, res) => {
+    const incident = await store.get(req.params.id);
+    if (!incident) return res.status(404).json({ error: "Incident not found" });
+    const token = req.header("x-device-token");
+    if (token !== incident.deviceToken) return res.status(403).json({ error: "Not the owning device" });
+    res.json({ incident: publicView(incident) });
+  });
+  router2.post("/api/incidents/:id/dispatch", requireOwner, async (req, res) => {
+    const incident = req.incident;
+    try {
+      await engine.dispatch(incident, publicBaseUrl(req));
+      const sent = incident.deliveries.filter((d) => d.status !== "failed").length;
+      res.json({
+        incident: publicView(incident),
+        summary: { total: incident.deliveries.length, sent, failed: incident.deliveries.length - sent, allFailed: incident.deliveries.length > 0 && sent === 0 }
+      });
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message, incident: publicView(incident) });
     }
-    const validPassword = await import_bcryptjs.default.compare(password, user.password_hash);
-    if (!validPassword) {
-      console.warn(`[Auth failure] Invalid password for ${email} from IP: ${req.ip}`);
-      return res.status(401).json({ error: "Invalid email or password" });
+  });
+  router2.post("/api/incidents/:id/cancel", requireOwner, async (req, res) => {
+    try {
+      res.json({ incident: publicView(await engine.cancel(req.incident, (0, import_xss.default)(req.body?.note || "Cancelled by user"))) });
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message });
     }
-    console.log(`[Auth success] User ${email} logged in from IP: ${req.ip}`);
-    const token = import_jsonwebtoken.default.sign({ id: user.id, email: safeEmail2 }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 36e5,
-      // 1h
-      sameSite: "strict"
+  });
+  router2.post("/api/incidents/:id/close", requireOwner, async (req, res) => {
+    try {
+      res.json({ incident: publicView(await engine.close(req.incident)) });
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message });
+    }
+  });
+  router2.get("/api/incidents/:id/report.pdf", async (req, res) => {
+    const incident = await store.get(req.params.id);
+    if (!incident) return res.status(404).send("Report not found");
+    const t = String(req.query.t || "");
+    const ok = t.length === incident.reportToken.length && import_crypto.default.timingSafeEqual(Buffer.from(t), Buffer.from(incident.reportToken));
+    if (!ok) return res.status(403).send("Invalid report link");
+    if ((incident.state === "CLOSED" || incident.state === "CANCELLED") && Date.now() - incident.updatedAt > 24 * 3600 * 1e3) {
+      return res.status(410).send("Report expired");
+    }
+    try {
+      const pdf = await renderIncidentPdf(incident);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Cache-Control", "no-store");
+      res.send(pdf);
+    } catch (e) {
+      res.status(500).send("Could not render report");
+    }
+  });
+  router2.post("/api/twilio/incidents/:id/gather", twilioGuard, async (req, res) => {
+    const twiml = new import_twilio.default.twiml.VoiceResponse();
+    const incident = await store.get(req.params.id);
+    const digits = String(req.body?.Digits || "");
+    const to = String(req.query.to || req.body?.To || "responder");
+    if (incident && digits === "1") {
+      await engine.acknowledge(incident, to, "call_keypress");
+      twiml.say("Thank you. The person has been told that you are responding. Goodbye.");
+    } else {
+      twiml.say("No confirmation recorded. Goodbye.");
+    }
+    twiml.hangup();
+    res.type("text/xml").send(twiml.toString());
+  });
+  router2.post("/api/twilio/incidents/:id/status", twilioGuard, async (req, res) => {
+    const incident = await store.get(req.params.id);
+    if (incident) {
+      const channel = req.query.channel === "call" ? "call" : "sms";
+      const sid = req.body?.MessageSid || req.body?.CallSid;
+      const status = req.body?.MessageStatus || req.body?.CallStatus || "";
+      await engine.updateDeliveryStatus(incident, channel, sid, status);
+    }
+    res.sendStatus(204);
+  });
+  router2.post("/api/twilio/sms", twilioGuard, async (req, res) => {
+    const body = String(req.body?.Body || "").toLowerCase().trim();
+    const from = String(req.body?.From || "");
+    const twiml = new import_twilio.default.twiml.MessagingResponse();
+    const confirms = body === "1" || /\b(yes|ok|okay|confirm|coming|on my way|en route|responding|ack)\b/.test(body);
+    const incident = from ? await store.findOpenByContact(from) : void 0;
+    if (incident && confirms) {
+      await engine.acknowledge(incident, from, "sms_reply");
+      twiml.message("RoadSOS: Thank you. The person has been told you are responding.");
+    } else if (incident) {
+      twiml.message("RoadSOS: Reply 1 to confirm you are responding to this emergency.");
+    } else {
+      twiml.message("RoadSOS: No active emergency is linked to this number.");
+    }
+    res.type("text/xml").send(twiml.toString());
+  });
+  io2?.on("connection", (socket) => {
+    socket.on("incident:join", (incidentId) => {
+      if (typeof incidentId === "string" && incidentId.length < 64) socket.join(`incident:${incidentId}`);
     });
-    res.json({ message: "Login successful" });
-  } catch (error) {
-    if (error.code === "42P01") {
-      const token = import_jsonwebtoken.default.sign({ id: "mock-id", email: safeEmail }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-      res.cookie("token", token, { httpOnly: true, secure: process.env.NODE_ENV === "production", maxAge: 36e5, sameSite: "strict" });
-      return res.json({ message: "Login successful (mock)" });
-    }
-    res.status(500).json({ error: error.message });
-  }
-});
-router.post("/forgot-password", resetLimiter, async (req, res) => {
-  try {
-    const schema = import_zod.z.object({ email: import_zod.z.string().email() });
-    const { email } = schema.parse(req.body);
-    const safeEmail2 = (0, import_xss.default)(email);
-    const resetToken = import_crypto.default.randomBytes(32).toString("hex");
-    const resetTokenExpires = new Date(Date.now() + 36e5).toISOString();
-    const { data: user, error } = await supabase.from("app_users").select("id").eq("email", safeEmail2).single();
-    if (!error && user) {
-      await supabase.from("app_users").update({ reset_token: resetToken, reset_token_expires: resetTokenExpires }).eq("id", user.id);
-      console.log(`[Email Service] Password Reset link: http://localhost:3000/api/auth/reset-password?token=${resetToken}`);
-    }
-    res.json({ message: "If that email is registered, a password reset link has been sent." });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-router.post("/reset-password", resetLimiter, async (req, res) => {
-  try {
-    const { token, newPassword } = resetPasswordSchema.parse(req.body);
-    const safeToken = (0, import_xss.default)(token);
-    const { data: user, error } = await supabase.from("app_users").select("id, reset_token_expires").eq("reset_token", safeToken).single();
-    if (error || !user) return res.status(400).json({ error: "Invalid or expired reset token" });
-    if (new Date(user.reset_token_expires) < /* @__PURE__ */ new Date()) {
-      return res.status(400).json({ error: "Reset token has expired" });
-    }
-    const salt = await import_bcryptjs.default.genSalt(12);
-    const newPasswordHash = await import_bcryptjs.default.hash(newPassword, salt);
-    await supabase.from("app_users").update({
-      password_hash: newPasswordHash,
-      reset_token: null,
-      reset_token_expires: null
-    }).eq("id", user.id);
-    res.json({ message: "Password has been successfully reset. You can now log in." });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-router.get("/me", authenticateToken, (req, res) => {
-  res.json({ user: req.user });
-});
-var auth_default = router;
+    socket.on("incident:leave", (incidentId) => {
+      if (typeof incidentId === "string") socket.leave(`incident:${incidentId}`);
+    });
+  });
+  return router2;
+}
 
 // api/index.ts
+var import_express_rate_limit2 = __toESM(require("express-rate-limit"), 1);
 var import_google_genai = require("@langchain/google-genai");
 var import_prompts = require("@langchain/core/prompts");
 var import_runnables = require("@langchain/core/runnables");
 var import_chat_history = require("@langchain/core/chat_history");
 import_dotenv.default.config();
-var reportStore = /* @__PURE__ */ new Map();
-var app = (0, import_express2.default)();
+var app = (0, import_express3.default)();
 var httpServer = (0, import_http.createServer)(app);
+var socketAllowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim()) : process.env.PUBLIC_BASE_URL ? [process.env.PUBLIC_BASE_URL] : process.env.NODE_ENV === "production" ? [] : "*";
 var io = new import_socket.Server(httpServer, {
-  cors: { origin: "*" }
+  cors: { origin: socketAllowedOrigins }
 });
 var PORT = 3e3;
-app.use(import_express2.default.json());
-app.use(import_express2.default.urlencoded({ extended: true }));
+app.use(import_express3.default.json());
+app.use(import_express3.default.urlencoded({ extended: true }));
 app.use((0, import_cookie_parser.default)());
 app.set("trust proxy", 1);
+app.use((0, import_helmet.default)({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false, crossOriginOpenerPolicy: false, crossOriginResourcePolicy: false, xFrameOptions: false }));
 var apiLimiter = (0, import_express_rate_limit2.default)({
   windowMs: 15 * 60 * 1e3,
   // 15 min
@@ -270,8 +766,22 @@ var aiLimiter = (0, import_express_rate_limit2.default)({
     res.status(429).json({ error: "Too many AI generation requests, please try again later." });
   }
 });
+app.use("/api/", apiLimiter);
+app.use("/api/ai/", aiLimiter);
 app.io = io;
-app.use("/api/auth", auth_default);
+if (process.env.SUPABASE_URL && process.env.JWT_SECRET) {
+  Promise.resolve().then(() => (init_auth(), auth_exports)).then(({ default: authRoutes }) => app.use("/api/auth", authRoutes)).catch((e) => console.error("[Auth] failed to mount:", e.message));
+}
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    twilio: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER),
+    gemini: !!process.env.GEMINI_API_KEY,
+    supabase: !!process.env.SUPABASE_URL,
+    maps: !!process.env.GOOGLE_MAPS_PLATFORM_KEY,
+    uptimeS: Math.round(process.uptime())
+  });
+});
 io.on("connection", (socket) => {
   console.log(`[Socket] Client connected: ${socket.id}`);
   socket.on("disconnect", () => {
@@ -331,7 +841,6 @@ var TRAINED_QA = [
   { q: "i have a headache", a: "Rest in a quiet place, drink water, avoid screen exposure, and seek medical help if the headache becomes severe." },
   { q: "fracture or swelling in his hands or legs", a: "Keep the injured hand or leg still, apply ice to reduce swelling, avoid movement, and seek medical help immediately if a fracture is suspected." },
   { q: "fracture or swelling", a: "Keep the injured hand or leg still, apply ice to reduce swelling, avoid movement, and seek medical help immediately if a fracture is suspected." },
-  { q: "hello", a: "HEILO bob how are you doing!" },
   { q: "What should you do if an accident victim stops responding during transport?", a: "Stop safely, check breathing and pulse, and begin CPR if necessary." }
 ];
 var findTrainedAnswer = (userInput) => {
@@ -397,8 +906,8 @@ var generateAIResponse = async (prompt, isHighPriority = false) => {
           systemInstruction: "EMERGENCY PROTOCOL: You are a trained first aid assistant. Match the user question or statement to the provided dataset of questions and answers. Reply with the EXACT answer text from the dataset. DO NOT add any introduction, greeting, conversational filler, or extra advisory remarks. IMPORTANT: Ensure all output is simple conversational plain text with absolutely no Markdown, no asterisks, no bolding,, and no bullet points, so it can be safely synthesized by a Text-to-Speech engine."
         }
       });
-      const text2 = response.text;
-      if (text2) return text2;
+      const text = response.text;
+      if (text) return text;
       throw new Error("Empty response from AI");
     } catch (error) {
       lastError = error;
@@ -482,18 +991,18 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
 };
 app.post("/api/ai/chat", async (req, res) => {
   try {
-    const { userText, history, systemPrompt } = import_zod2.z.object({
-      userText: import_zod2.z.string().min(1),
-      history: import_zod2.z.array(import_zod2.z.object({ role: import_zod2.z.string(), text: import_zod2.z.string() })).optional(),
-      systemPrompt: import_zod2.z.string().optional()
+    const { userText, history, systemPrompt } = import_zod3.z.object({
+      userText: import_zod3.z.string().min(1),
+      history: import_zod3.z.array(import_zod3.z.object({ role: import_zod3.z.string(), text: import_zod3.z.string() })).optional(),
+      systemPrompt: import_zod3.z.string().optional()
     }).parse(req.body);
-    const safeUserText = (0, import_xss2.default)(userText);
-    const safeSystemPrompt = systemPrompt ? (0, import_xss2.default)(systemPrompt) : void 0;
+    const safeUserText = (0, import_xss3.default)(userText);
+    const safeSystemPrompt = systemPrompt ? (0, import_xss3.default)(systemPrompt) : void 0;
     let contents = safeUserText;
     if (history && history.length > 0) {
       contents = history.map((h) => ({
         role: h.role === "assistant" ? "model" : "user",
-        parts: [{ text: (0, import_xss2.default)(h.text) }]
+        parts: [{ text: (0, import_xss3.default)(h.text) }]
       }));
       contents.push({ role: "user", parts: [{ text: safeUserText }] });
     }
@@ -513,7 +1022,7 @@ app.post("/api/ai/chat", async (req, res) => {
       res.status(500).json({ error: "No text returned from Gemini." });
     }
   } catch (error) {
-    if (error instanceof import_zod2.z.ZodError) {
+    if (error instanceof import_zod3.z.ZodError) {
       return res.status(400).json({ error: "Invalid input" });
     }
     console.error(`[AI Chat Error]`, error.message);
@@ -525,13 +1034,13 @@ app.post("/api/ai/chat", async (req, res) => {
 });
 app.post("/api/ai/ask", async (req, res) => {
   try {
-    const schema = import_zod2.z.object({
-      question: import_zod2.z.string().min(1),
-      stream: import_zod2.z.boolean().optional(),
-      location: import_zod2.z.object({ lat: import_zod2.z.number(), lng: import_zod2.z.number() }).optional()
+    const schema = import_zod3.z.object({
+      question: import_zod3.z.string().min(1),
+      stream: import_zod3.z.boolean().optional(),
+      location: import_zod3.z.object({ lat: import_zod3.z.number(), lng: import_zod3.z.number() }).optional()
     });
     const parsed = schema.parse(req.body);
-    const question = (0, import_xss2.default)(parsed.question);
+    const question = (0, import_xss3.default)(parsed.question);
     const stream = parsed.stream;
     const location = parsed.location;
     let location_context = "Location not provided by user.";
@@ -577,12 +1086,12 @@ app.post("/api/ai/ask", async (req, res) => {
       if (question.toLowerCase().trim().includes("hello")) {
         if (stream) {
           res.setHeader("Content-Type", "text/event-stream");
-          res.write(`data: ${JSON.stringify({ chunk: "HEILO bob how are you doing!" })}
+          res.write(`data: ${JSON.stringify({ chunk: "Hello! I am your AI assistant. How can I help?" })}
 
 `);
           return res.end();
         }
-        return res.json({ answer: "HEILO bob how are you doing!" });
+        return res.json({ answer: "Hello! I am your AI assistant. How can I help?" });
       }
       const trainedAns = findTrainedAnswer(question);
       if (trainedAns) {
@@ -716,324 +1225,85 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
       res.json({ answer: "I'm experiencing connectivity issues right now. How else can I assist you with safety?", error_detail: "Connection Issue" });
     }
   } catch (outerError) {
-    if (outerError instanceof import_zod2.z.ZodError) {
+    if (outerError instanceof import_zod3.z.ZodError) {
       return res.status(400).json({ error: "Invalid input" });
     }
     return res.status(500).json({ error: outerError.message });
   }
 });
-var isDrivingModeActive = false;
-var activeUserPhone = "";
-var lastConfirmation = { confirmed: false, responder: "", timestamp: 0 };
-app.get("/api/emergencies/confirmation-status", (req, res) => {
-  res.json(lastConfirmation);
-});
-app.post("/api/emergencies/confirm", (req, res) => {
-  try {
-    const { responder } = import_zod2.z.object({ responder: import_zod2.z.string().optional().default("Regional Trauma Center") }).parse(req.body);
-    const safeResponder = (0, import_xss2.default)(responder);
-    lastConfirmation = {
-      confirmed: true,
-      responder: safeResponder,
-      timestamp: Date.now()
-    };
-    console.log(`[Status] Manual confirmation received from: ${safeResponder}`);
-    res.json({ success: true, lastConfirmation });
-  } catch (err) {
-    res.status(400).json({ error: "Invalid input" });
+var drivingStateByDevice = /* @__PURE__ */ new Map();
+var mostRecentDeviceToken = null;
+setInterval(() => {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1e3;
+  for (const [token, state] of drivingStateByDevice) {
+    if (state.updatedAt < cutoff) drivingStateByDevice.delete(token);
   }
-});
-app.post("/api/emergencies/confirmation-reset", (req, res) => {
-  lastConfirmation = { confirmed: false, responder: "", timestamp: 0 };
-  res.json({ success: true });
-});
-app.post("/api/twilio/sms", (req, res) => {
-  try {
-    const parsed = import_zod2.z.object({ Body: import_zod2.z.string().optional(), From: import_zod2.z.string().optional() }).parse(req.body);
-    const body = (parsed.Body || "").toLowerCase().trim();
-    const from = (0, import_xss2.default)(parsed.From || "Emergency Dispatch");
-    console.log(`[Twilio Webhook] Received SMS reply: "${(0, import_xss2.default)(body)}" from ${from}`);
-    const keywords = ["yes", "ok", "confirm", "coming", "on my way", "arrival", "ack", "active", "help", "en route", "dispatched", "will attend", "1"];
-    const isConfirmed = keywords.some((kw) => body.includes(kw)) || body === "1";
-    const twiml = new import_twilio.default.twiml.MessagingResponse();
-    if (isConfirmed) {
-      lastConfirmation = {
-        confirmed: true,
-        responder: from,
-        timestamp: Date.now()
-      };
-      app.io.emit("help_arriving", lastConfirmation);
-      twiml.message(`RoadSOS: Acknowledged. We are transmitting confirmation to the victim that help is arriving.`);
-    } else {
-      twiml.message(`RoadSOS Emergency: Response ignored or not understood. Send 'YES', 'OK', or '1' to confirm dispatch.`);
-    }
-    res.type("text/xml");
-    res.send(twiml.toString());
-  } catch (err) {
-    if (err instanceof import_zod2.z.ZodError) {
-      return res.status(400).json({ error: "Invalid input" });
-    }
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-app.post("/api/twilio/call-gather", (req, res) => {
-  try {
-    const parsed = import_zod2.z.object({ Digits: import_zod2.z.string().optional() }).parse(req.body);
-    const digits = (0, import_xss2.default)(parsed.Digits || "");
-    const hostUrl = `${req.protocol}://${req.get("host")}`;
-    console.log(`[Twilio Call Gather] Keypress digit received: ${digits}`);
-    const twiml = new import_twilio.default.twiml.VoiceResponse();
-    if (digits === "1") {
-      twiml.say("Help is coming");
-      twiml.hangup();
-      setTimeout(() => {
-        lastConfirmation = {
-          confirmed: true,
-          responder: "Ambulance Driver (+917892375787)",
-          timestamp: Date.now()
-        };
-        app.io.emit("help_arriving", lastConfirmation);
-      }, 0);
-    } else {
-      twiml.say("Command not recognized");
-      twiml.hangup();
-    }
-    res.type("text/xml");
-    res.send(twiml.toString());
-  } catch (error) {
-    console.error(`[Twilio webhook error]: ${error.message}`);
-    const twiml = new import_twilio.default.twiml.VoiceResponse();
-    twiml.say("An application error occurred.");
-    twiml.hangup();
-    res.type("text/xml");
-    res.send(twiml.toString());
-  }
-});
+}, 60 * 60 * 1e3).unref?.();
 app.post("/api/status/driving", (req, res) => {
   try {
-    const { active, phone } = import_zod2.z.object({ active: import_zod2.z.boolean().optional(), phone: import_zod2.z.string().optional() }).parse(req.body);
-    isDrivingModeActive = !!active;
-    if (phone) {
-      activeUserPhone = (0, import_xss2.default)(phone);
+    const deviceToken = req.header("x-device-token");
+    if (!deviceToken || deviceToken.length < 16) {
+      return res.status(401).json({ error: "Missing device token" });
     }
-    console.log(`[Status] Driving Mode: ${isDrivingModeActive ? "ENABLED" : "DISABLED"} for ${activeUserPhone}`);
-    res.json({ success: true, isDrivingModeActive, activeUserPhone });
+    const { active, phone } = import_zod3.z.object({ active: import_zod3.z.boolean().optional(), phone: import_zod3.z.string().optional() }).parse(req.body);
+    const existing = drivingStateByDevice.get(deviceToken);
+    const nextState = {
+      isDrivingModeActive: !!active,
+      phone: phone ? (0, import_xss3.default)(phone) : existing?.phone || "",
+      updatedAt: Date.now()
+    };
+    drivingStateByDevice.set(deviceToken, nextState);
+    mostRecentDeviceToken = deviceToken;
+    res.json({ success: true, isDrivingModeActive: nextState.isDrivingModeActive });
   } catch (err) {
-    if (err instanceof import_zod2.z.ZodError) return res.status(400).json({ error: "Invalid input" });
+    if (err instanceof import_zod3.z.ZodError) return res.status(400).json({ error: "Invalid input" });
     return res.status(500).json({ error: "Internal Error" });
   }
 });
-app.post("/api/twilio/voice", (req, res) => {
-  console.log(`[Twilio Webhook] Received voice request. Driving Mode Active: ${isDrivingModeActive}`);
-  const twiml = new import_twilio.default.twiml.VoiceResponse();
-  if (isDrivingModeActive) {
-    twiml.say("Bob is driving and will reach to you later.");
+app.post("/api/twilio/voice", import_twilio2.default.webhook({ validate: process.env.NODE_ENV === "production" }), (req, res) => {
+  const twiml = new import_twilio2.default.twiml.VoiceResponse();
+  const state = mostRecentDeviceToken ? drivingStateByDevice.get(mostRecentDeviceToken) : void 0;
+  if (state?.isDrivingModeActive) {
+    twiml.say("The driver is currently operating a vehicle and will reach out to you later.");
     twiml.hangup();
+  } else if (state?.phone) {
+    twiml.say("Connecting you to the driver.");
+    twiml.dial(state.phone);
   } else {
-    twiml.say("Connecting you to Bob.");
-    if (activeUserPhone) {
-      twiml.dial(activeUserPhone);
-    } else {
-      twiml.say("The user is currently available but Road SOS is in monitoring mode. Please try later or use the distress frequency.");
-      twiml.hangup();
-    }
+    twiml.say("The driver is not available right now. Please try again later.");
+    twiml.hangup();
   }
   res.type("text/xml");
   res.send(twiml.toString());
 });
-app.post("/api/sos/send-report", async (req, res) => {
-  try {
-    const { responder, logs, medicalInfo } = import_zod2.z.object({
-      responder: import_zod2.z.string().min(1),
-      logs: import_zod2.z.array(import_zod2.z.any()).optional(),
-      medicalInfo: import_zod2.z.record(import_zod2.z.any()).optional()
-    }).parse(req.body);
-    const safeResponder = (0, import_xss2.default)(responder);
-    try {
-      const doc = new import_pdfkit.default();
-      const buffers = [];
-      doc.on("data", buffers.push.bind(buffers));
-      doc.fontSize(20).text("RoadSOS Accident Report", { align: "center" });
-      doc.moveDown();
-      const safeName = medicalInfo?.name ? (0, import_xss2.default)(medicalInfo.name) : "Unknown";
-      const safeBlood = medicalInfo?.bloodGroup ? (0, import_xss2.default)(medicalInfo.bloodGroup) : "Unknown";
-      const safeCond = medicalInfo?.conditions ? (0, import_xss2.default)(medicalInfo.conditions) : "None";
-      doc.fontSize(14).text(`Patient Name: ${safeName}`);
-      doc.text(`Blood Group: ${safeBlood}`);
-      doc.text(`Medical Conditions: ${safeCond}`);
-      doc.moveDown();
-      doc.fontSize(16).text("Recent Accident Logs:");
-      doc.fontSize(12);
-      (logs || []).forEach((log) => {
-        const msg = typeof log.message === "string" ? (0, import_xss2.default)(log.message) : "";
-        doc.text(`[${new Date(log.timestamp).toLocaleString()}] ${msg}`);
-      });
-      doc.end();
-      doc.on("end", async () => {
-        const pdfData = Buffer.concat(buffers);
-        const reportId = import_crypto2.default.randomUUID();
-        reportStore.set(reportId, pdfData);
-        setTimeout(() => reportStore.delete(reportId), 12 * 60 * 60 * 1e3);
-        let reportUrl = "";
-        try {
-          const client = getTwilio();
-          const from = process.env.TWILIO_FROM_NUMBER;
-          const hostUrl = `${req.headers["x-forwarded-proto"] || req.protocol}://${req.get("host")}`;
-          reportUrl = `${hostUrl}/api/report/${reportId}.pdf`;
-          await client.messages.create({
-            body: `RoadSOS: Victim's Medical & Accident Logs PDF Report available here: ${reportUrl}`,
-            from,
-            to: safeResponder
-          });
-          res.json({ success: true, reportId, reportUrl });
-        } catch (err) {
-          if (err.message && err.message.includes("Authenticate")) {
-            console.error("Twilio report send error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
-            res.status(500).json({ error: err.message });
-          } else if (err.message && (err.message.includes("unverified") || err.message.includes("Trial account"))) {
-            console.error("Twilio report send error (Mocking Success due to Trial Account):", err.message);
-            res.json({ success: true, reportId, reportUrl, mocked: true });
-          } else {
-            console.error("Twilio report send error:", err);
-            res.status(500).json({ error: err.message });
-          }
-        }
-      });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  } catch (zErr) {
-    if (zErr instanceof import_zod2.z.ZodError) return res.status(400).json({ error: "Invalid input" });
-    res.status(500).json({ error: "Validation Error" });
-  }
+var supabaseConfigured = !!(process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY));
+var supabase2 = supabaseConfigured ? (0, import_supabase_js2.createClient)(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY) : null;
+var incidentStore = supabase2 && process.env.SUPABASE_SERVICE_ROLE_KEY ? new SupabaseMirroredStore(supabase2) : new MemoryIncidentStore();
+var incidentEngine = new IncidentEngine({
+  store: incidentStore,
+  io,
+  getTwilio,
+  fromNumber: process.env.TWILIO_FROM_NUMBER
 });
-app.get("/api/report/:id.pdf", (req, res) => {
-  const data = reportStore.get(req.params.id);
-  if (!data) return res.status(404).send("Report not found or expired");
-  res.contentType("application/pdf");
-  res.send(data);
-});
-var SUPABASE_URL2 = process.env.SUPABASE_URL || "";
-var SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
-var supabase2 = (0, import_supabase_js2.createClient)(SUPABASE_URL2, SUPABASE_ANON_KEY);
+app.use(createIncidentRouter(incidentEngine, incidentStore, io));
 var twilioClient = null;
-var getTwilio = () => {
+function getTwilio() {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
-  if (!sid || !token) {
-    throw new Error("Twilio credentials missing.");
-  }
-  if (!twilioClient) {
-    twilioClient = (0, import_twilio.default)(sid, token);
-  }
+  if (!sid || !token) throw new Error("Twilio credentials not configured");
+  if (!twilioClient) twilioClient = (0, import_twilio2.default)(sid, token);
   return twilioClient;
-};
+}
 app.get("/api/config/maps", (req, res) => {
-  res.json({ apiKey: process.env.GOOGLE_MAPS_PLATFORM_KEY || "" });
-});
-app.get("/api/health/traffic", async (req, res) => {
-  const apiKey = process.env.GOOGLE_MAPS_PLATFORM_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ status: "error", message: "Missing GOOGLE_MAPS_PLATFORM_KEY" });
-  }
-  try {
-    const response = await fetch(`https://routes.googleapis.com/directions/v2:computeRoutes`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters"
-      },
-      body: JSON.stringify({
-        origin: { location: { latLng: { latitude: 12.9716, longitude: 77.5946 } } },
-        destination: { location: { latLng: { latitude: 12.9716, longitude: 77.6 } } },
-        travelMode: "DRIVE"
-      }),
-      // Using an abort controller for timeout resilience (e.g. 5000ms limit)
-      signal: AbortSignal.timeout(5e3)
-    });
-    if (response.status === 429) {
-      return res.status(429).json({ status: "degraded", message: "Rate limit exceeded on Traffic API" });
-    }
-    if (!response.ok) {
-      return res.status(response.status).json({ status: "error", message: `Traffic API returned ${response.status}` });
-    }
-    const data = await response.json();
-    if (data && data.routes) {
-      return res.json({ status: "healthy" });
-    } else {
-      return res.status(500).json({ status: "error", message: "Invalid payload schema from Traffic API" });
-    }
-  } catch (error) {
-    if (error.name === "TimeoutError") {
-      return res.status(504).json({ status: "error", message: "Traffic API connection timed out" });
-    }
-    return res.status(500).json({ status: "error", message: error.message });
-  }
+  res.json({ apiKey: process.env.GOOGLE_MAPS_BROWSER_KEY || process.env.GOOGLE_MAPS_PLATFORM_KEY || "" });
 });
 app.get("/api/config/twilio", (req, res) => {
-  res.json({ phoneNumber: process.env.TWILIO_FROM_NUMBER || "+1234567890" });
-});
-app.get("/api/diagnostics/twilio", (req, res) => {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const fromNum = process.env.TWILIO_FROM_NUMBER;
-  const hostUrl = `${req.protocol}://${req.get("host")}`;
-  const status = {
-    environment_variables: {
-      TWILIO_ACCOUNT_SID: {
-        configured: !!sid,
-        valid_format: !!sid && (sid.startsWith("AC") || sid.length > 20)
-      },
-      TWILIO_AUTH_TOKEN: {
-        configured: !!token,
-        valid_format: !!token && token.length > 20
-      },
-      TWILIO_FROM_NUMBER: {
-        configured: !!fromNum,
-        valid_format: !!fromNum && fromNum.startsWith("+")
-      }
-    },
-    webhook_configuration_urls: {
-      sms_webhook: `${hostUrl}/api/twilio/sms`,
-      voice_webhook: `${hostUrl}/api/twilio/voice`,
-      instructions: "Set the above URLs in your Twilio Console for the configured phone number under 'Messaging' (Webhook) and 'Voice' (Webhook) sections."
-    },
-    overall_status: !!(sid && token && fromNum) ? "READY" : "MISSING_CONFIGURATION"
-  };
-  res.json(status);
-});
-app.post("/api/emergencies/log", async (req, res) => {
-  try {
-    const { details, location, type } = import_zod2.z.object({
-      details: import_zod2.z.record(import_zod2.z.any()).optional(),
-      location: import_zod2.z.object({ lat: import_zod2.z.number(), lng: import_zod2.z.number() }).optional(),
-      type: import_zod2.z.string().optional()
-    }).parse(req.body);
-    try {
-      const logEntry = {
-        serialized_payload: JSON.stringify(details || {}),
-        facility_name: details?.facility ? (0, import_xss2.default)(details.facility) : "Unknown",
-        lat: location?.lat || 0,
-        lng: location?.lng || 0,
-        injury_tag: type ? (0, import_xss2.default)(type) : "voice_interaction"
-      };
-      const { data, error } = await supabase2.from("emergency_logs").insert([logEntry]);
-      if (error) throw error;
-      res.json({ success: true, data });
-    } catch (error) {
-      console.log("\u26A0\uFE0F Supabase Log Error:", error.message);
-      res.status(500).json({ error: "Storage Failure" });
-    }
-  } catch (zErr) {
-    if (zErr instanceof import_zod2.z.ZodError) return res.status(400).json({ error: "Invalid input" });
-    res.status(500).json({ error: "Server Error" });
-  }
+  res.json({ phoneNumber: process.env.TWILIO_FROM_NUMBER || null });
 });
 app.post("/api/ai/voice-process", async (req, res) => {
   try {
-    const { transcript } = import_zod2.z.object({ transcript: import_zod2.z.string().min(1) }).parse(req.body);
-    const safeTranscript = (0, import_xss2.default)(transcript);
+    const { transcript } = import_zod3.z.object({ transcript: import_zod3.z.string().min(1) }).parse(req.body);
+    const safeTranscript = (0, import_xss3.default)(transcript);
     try {
       const trainedAns = findTrainedAnswer(safeTranscript);
       if (trainedAns) {
@@ -1050,11 +1320,11 @@ app.post("/api/ai/voice-process", async (req, res) => {
 
         Context: ${KNOWLEDGE_BASE_CONTEXT}
       `;
-      const text2 = await generateAIResponse(prompt, true);
+      const text = await generateAIResponse(prompt, true);
       let mode = "GENERAL";
-      if (text2.includes("[MODE: EMERGENCY]")) mode = "EMERGENCY";
-      else if (text2.includes("[MODE: TRAINING]")) mode = "TRAINING";
-      res.json({ mode, content: text2.replace(/\[MODE: .*?\]/, "").replace(/Content:/, "").trim(), original_transcript: safeTranscript });
+      if (text.includes("[MODE: EMERGENCY]")) mode = "EMERGENCY";
+      else if (text.includes("[MODE: TRAINING]")) mode = "TRAINING";
+      res.json({ mode, content: text.replace(/\[MODE: .*?\]/, "").replace(/Content:/, "").trim(), original_transcript: safeTranscript });
     } catch (error) {
       if (error?.message?.includes("quota") || error?.message?.includes("429")) {
         console.log("\u26A0\uFE0F AI Error: Quota.");
@@ -1067,183 +1337,15 @@ app.post("/api/ai/voice-process", async (req, res) => {
     res.status(400).json({ error: "Invalid transcript" });
   }
 });
-app.post("/api/sos/notify", async (req, res) => {
-  lastConfirmation = { confirmed: false, responder: "", timestamp: 0 };
-  try {
-    const { recipients, message } = import_zod2.z.object({
-      recipients: import_zod2.z.array(import_zod2.z.string()).min(1),
-      message: import_zod2.z.string().min(1)
-    }).parse(req.body);
-    const safeMessage = (0, import_xss2.default)(message);
-    const safeRecipients = recipients.map((r) => Math.random() ? r : r);
-    console.log(`[SMS] Attempting to notify: ${safeRecipients}`);
-    try {
-      const client = getTwilio();
-      const from = process.env.TWILIO_FROM_NUMBER;
-      if (!from) {
-        console.error("[SMS] Error: TWILIO_FROM_NUMBER is not set.");
-        throw new Error("TWILIO_FROM_NUMBER is missing");
-      }
-      const results = [];
-      for (const to of safeRecipients) {
-        const formattedTo = to.trim().startsWith("+") ? to.trim() : `+${to.trim()}`;
-        console.log(`[SMS] Sending to: ${formattedTo} from: ${from}`);
-        try {
-          const result = await client.messages.create({
-            body: safeMessage,
-            to: formattedTo,
-            from
-          });
-          results.push({ status: "fulfilled", value: result });
-          await new Promise((resolve) => setTimeout(resolve, 500));
-        } catch (err) {
-          if (err.message && err.message.includes("Authenticate")) {
-            console.error(`[SMS] Failed to send to ${formattedTo}: Twilio Authentication Error. Please check your TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in the AI Studio Settings menu.`);
-            results.push({ status: "rejected", reason: err });
-          } else if (err.message && (err.message.includes("unverified") || err.message.includes("Trial account"))) {
-            console.warn(`[SMS] Mocking success to ${formattedTo} due to Twilio trial constraints`);
-            results.push({ status: "fulfilled", value: { sid: "mock_sid_trial" }, mocked: true });
-          } else {
-            console.error(`[SMS] Failed to send to ${formattedTo}:`, err);
-            results.push({ status: "rejected", reason: err });
-          }
-        }
-      }
-      console.log(`[SMS] Delivered to ${results.filter((r) => r.status === "fulfilled").length} recipients.`);
-      res.json({ success: true, results });
-    } catch (error) {
-      console.log("\u26A0\uFE0F Twilio SMS Error:", error.message);
-      res.status(500).json({ success: false, error: error.message });
-    }
-  } catch (zerr) {
-    res.status(400).json({ error: "Invalid notify data" });
-  }
-});
-app.post("/api/sos/call-neon", async (req, res) => {
-  try {
-    const { to, patientName } = import_zod2.z.object({
-      to: import_zod2.z.string().optional().default("+916361892311"),
-      patientName: import_zod2.z.string().optional().default("BOB")
-    }).parse(req.body);
-    const safeTo = (0, import_xss2.default)(to);
-    const safePatient = (0, import_xss2.default)(patientName);
-    console.log(`[Neon Distress] Attempting to call: ${safeTo}`);
-    try {
-      const client = getTwilio();
-      const from = process.env.TWILIO_FROM_NUMBER;
-      if (!from) throw new Error("TWILIO_FROM_NUMBER is missing");
-      const formattedTo = safeTo.trim().startsWith("+") ? safeTo.trim() : `+${safeTo.trim()}`;
-      const hostUrl = `https://${req.get("host")}`;
-      const twimlString = `<Response>
-        <Gather numDigits="1" action="${hostUrl}/api/twilio/call-neon-gather?patient=${encodeURIComponent(safePatient)}" timeout="15" method="POST">
-          <Say>${safePatient} is in danger. ${safePatient} is in danger. Press 1 to acknowledge.</Say>
-        </Gather>
-        <Say>No confirmation received.</Say>
-      </Response>`;
-      const call = await client.calls.create({
-        twiml: twimlString,
-        to: formattedTo,
-        from
-      });
-      console.log(`[Neon Call] SID: ${call.sid}`);
-      res.json({ success: true, callSid: call.sid });
-    } catch (error) {
-      if (error.message && error.message.includes("Authenticate")) {
-        console.log("\u26A0\uFE0F Neon Call Error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
-        res.status(500).json({ success: false, error: error.message });
-      } else if (error.message && (error.message.includes("unverified") || error.message.includes("Trial account"))) {
-        console.log("\u26A0\uFE0F Neon Call Mocked due to Twilio trial constraints.");
-        res.json({ success: true, callSid: "mock_sid_trial", mocked: true });
-      } else {
-        console.log("\u26A0\uFE0F Neon Call Error:", error.message);
-        res.status(500).json({ success: false, error: error.message });
-      }
-    }
-  } catch (zerr) {
-    res.status(400).json({ error: "Invalid input" });
-  }
-});
-app.post("/api/twilio/call-neon-gather", (req, res) => {
-  try {
-    const digits = req.body.Digits;
-    const patient = req.query.patient || "BOB";
-    console.log(`[Twilio Call Neon Gather] Keypress digit received: ${digits}`);
-    const twiml = new import_twilio.default.twiml.VoiceResponse();
-    if (digits === "1") {
-      twiml.say({ loop: 3 }, `${patient} is in danger!`);
-      twiml.hangup();
-      setTimeout(() => {
-        app.io.emit("neon_confirmed", { timestamp: Date.now() });
-      }, 0);
-    } else {
-      twiml.say("Command not recognized.");
-      twiml.hangup();
-    }
-    res.type("text/xml");
-    res.send(twiml.toString());
-  } catch (error) {
-    console.error(`[Twilio neon call webhook error]: ${error.message}`);
-    const twiml = new import_twilio.default.twiml.VoiceResponse();
-    twiml.say("An application error occurred.");
-    twiml.hangup();
-    res.type("text/xml");
-    res.send(twiml.toString());
-  }
-});
-app.post("/api/sos/call-initiate", async (req, res) => {
-  try {
-    const { to, message, host } = import_zod2.z.object({
-      to: import_zod2.z.string().optional().default("+917892375787"),
-      message: import_zod2.z.string().optional(),
-      host: import_zod2.z.string().optional()
-    }).parse(req.body);
-    const safeTo = (0, import_xss2.default)(to);
-    const safeMessage = message ? (0, import_xss2.default)(message) : void 0;
-    const safeHost = host ? (0, import_xss2.default)(host) : void 0;
-    console.log(`[Call] Attempting to call: ${safeTo}`);
-    try {
-      const client = getTwilio();
-      const from = process.env.TWILIO_FROM_NUMBER;
-      if (!from) throw new Error("TWILIO_FROM_NUMBER is missing");
-      const formattedTo = safeTo.trim().startsWith("+") ? safeTo.trim() : `+${safeTo.trim()}`;
-      const hostUrl = safeHost || `https://${req.get("host")}`;
-      const twimlString = `<Response>
-        <Gather numDigits="1" action="${hostUrl}/api/twilio/call-gather" timeout="15" method="POST">
-          <Say>${safeMessage || "Emergency. Please press 1 to confirm dispatch of help."}</Say>
-        </Gather>
-        <Say>We did not receive confirmation.</Say>
-      </Response>`;
-      const call = await client.calls.create({
-        twiml: twimlString,
-        to: formattedTo,
-        from
-      });
-      res.json({ success: true, callSid: call.sid });
-    } catch (error) {
-      if (error.message && error.message.includes("Authenticate")) {
-        console.log("\u26A0\uFE0F Twilio Call Error: Twilio Authentication Failed. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Settings.");
-        res.status(500).json({ success: false, error: error.message });
-      } else if (error.message && (error.message.includes("unverified") || error.message.includes("Trial account"))) {
-        console.log("\u26A0\uFE0F Twilio Call Mocked due to trial constraints.");
-        res.json({ success: true, callSid: "mock_sid_trial", mocked: true });
-      } else {
-        console.log("\u26A0\uFE0F Twilio Call Error:", error.message);
-        res.status(500).json({ success: false, error: error.message });
-      }
-    }
-  } catch (zerr) {
-    res.status(400).json({ error: "Invalid input" });
-  }
-});
 var voiceAgentMutex = Promise.resolve();
 app.post("/api/ai/voice-agent", async (req, res) => {
   try {
-    const { transcript, location, history } = import_zod2.z.object({
-      transcript: import_zod2.z.string().optional(),
-      location: import_zod2.z.object({ lat: import_zod2.z.number(), lng: import_zod2.z.number() }).optional(),
-      history: import_zod2.z.array(import_zod2.z.any()).optional()
+    const { transcript, location, history } = import_zod3.z.object({
+      transcript: import_zod3.z.string().optional(),
+      location: import_zod3.z.object({ lat: import_zod3.z.number(), lng: import_zod3.z.number() }).optional(),
+      history: import_zod3.z.array(import_zod3.z.object({ role: import_zod3.z.string(), parts: import_zod3.z.array(import_zod3.z.object({ text: import_zod3.z.string() })) })).optional()
     }).parse(req.body);
-    const safeTranscript = (0, import_xss2.default)(transcript || "");
+    const safeTranscript = (0, import_xss3.default)(transcript || "");
     const cleanTranscript = safeTranscript.trim();
     if (!cleanTranscript || cleanTranscript.length === 0) {
       return res.json({ text: "I'm listening." });
@@ -1346,7 +1448,7 @@ If the user asks a general question, just answer it directly. Only use tools whe
       } catch (error) {
         if (error.message?.includes("quota") || error.message?.includes("Quota") || error.message?.includes("429") || error.message?.includes("503") || error.message?.includes("UNAVAILABLE")) {
           console.log("\u26A0\uFE0F Voice Agent is at full capacity (Quota/Rate Limit). Using local Q&A fallback.");
-          const fallbackAns = findTrainedAnswer(transcript);
+          const fallbackAns = findTrainedAnswer(cleanTranscript);
           if (fallbackAns) {
             return res.json({ text: fallbackAns });
           }
@@ -1362,85 +1464,15 @@ If the user asks a general question, just answer it directly. Only use tools whe
     res.status(400).json({ error: "Invalid input" });
   }
 });
-var trafficCache = /* @__PURE__ */ new Map();
-app.post("/api/traffic-updates", async (req, res) => {
-  try {
-    const { lat, lng, locationName } = import_zod2.z.object({
-      lat: import_zod2.z.number().optional(),
-      lng: import_zod2.z.number().optional(),
-      locationName: import_zod2.z.string().optional()
-    }).parse(req.body);
-    const safeLocName = locationName ? (0, import_xss2.default)(locationName) : void 0;
-    if (!safeLocName && (!lat || !lng)) return res.status(400).json({ error: "Missing location" });
-    const cacheKey = safeLocName ? safeLocName.toLowerCase() : `${lat.toFixed(3)},${lng.toFixed(3)}`;
-    const cached = trafficCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1e3) {
-      return res.json({ update: cached.result });
-    }
-    try {
-      const ai = getAI();
-      let prompt = "";
-      if (safeLocName) {
-        prompt = `Give me a concise real-time traffic update (under 30 words) on traffic jams, accident reports, or road closures within a 2-3 km radius of ${safeLocName}. CRITICAL: Give the actual street names and area names where the traffic is. Format as plain text.`;
-      } else {
-        prompt = `Give me a concise real-time traffic update (under 30 words) on traffic jams, accident reports, or road closures within a 2 to 3 km radius of latitude ${lat}, longitude ${lng}. CRITICAL: Give the actual street names and area names where the traffic is. DO NOT output the latitude and longitude coordinates in your response. Format as plain text.`;
-      }
-      const generateCall = async (modelName, retries = 2) => {
-        for (let i = 0; i < retries; i++) {
-          try {
-            return await ai.models.generateContent({
-              model: modelName,
-              contents: prompt,
-              config: {
-                tools: [{ googleSearch: {} }]
-              }
-            });
-          } catch (e) {
-            const isQuota = e.message?.includes("exceeded your current quota") || e.message?.includes("Quota exceeded");
-            if (isQuota) {
-              console.log(`[Ask API] Quota exceeded for model ${modelName}, failing fast.`);
-              throw new Error("QUOTA_EXCEEDED");
-            }
-            if ((e.message?.includes("503") || e.message?.includes("UNAVAILABLE") || e.message?.includes("high demand") || e.message?.includes("429")) && i < retries - 1) {
-              console.log(`Traffic Update retry ${i + 1} due to rate limiting`);
-              await new Promise((res2) => setTimeout(res2, 1e3));
-              continue;
-            }
-            throw e;
-          }
-        }
-      };
-      let response;
-      try {
-        response = await generateCall("gemini-2.5-flash-lite");
-      } catch (e) {
-        if (e.message !== "QUOTA_EXCEEDED") {
-          console.log("\u26A0\uFE0F Traffic Update fallback hit:", e.message);
-        }
-        const text2 = "Traffic is currently moderate with standard delays. Always drive safely.";
-        trafficCache.set(cacheKey, { result: text2, timestamp: Date.now() });
-        return res.json({ update: text2 });
-      }
-      trafficCache.set(cacheKey, { result: text, timestamp: Date.now() });
-      res.json({ update: text });
-    } catch (error) {
-      if (error.message?.includes("quota") || error.message?.includes("429")) {
-        console.log("\u26A0\uFE0F Traffic Update Rate Limit hit.");
-      } else {
-        console.log("\u26A0\uFE0F Traffic Update Error.");
-      }
-      res.json({ update: "Traffic is currently moderate with standard delays. Always drive safely." });
-    }
-  } catch (zerr) {
-    res.status(400).json({ error: "Invalid input" });
-  }
-});
 app.get("/api/geoapify/nearby", async (req, res) => {
   try {
-    const parsed = import_zod2.z.object({ lat: import_zod2.z.string(), lng: import_zod2.z.string() }).parse(req.query);
-    const lat = (0, import_xss2.default)(parsed.lat);
-    const lng = (0, import_xss2.default)(parsed.lng);
-    const GEO_API_KEY = process.env.GEOAPIFY_API_KEY || "fallback_geoapify_key";
+    const parsed = import_zod3.z.object({ lat: import_zod3.z.string(), lng: import_zod3.z.string() }).parse(req.query);
+    const lat = (0, import_xss3.default)(parsed.lat);
+    const lng = (0, import_xss3.default)(parsed.lng);
+    const GEO_API_KEY = process.env.GEOAPIFY_API_KEY;
+    if (!GEO_API_KEY) {
+      return res.status(500).json({ error: "Server misconfiguration: GEOAPIFY_API_KEY is not set." });
+    }
     const url = `https://api.geoapify.com/v2/places?categories=healthcare.hospital,service.police,service.fire_station&filter=circle:${lng},${lat},5000&limit=8&apiKey=${GEO_API_KEY}`;
     const response = await fetch(url);
     const data = await response.json();
@@ -1454,10 +1486,13 @@ app.get("/api/geoapify/nearby", async (req, res) => {
 });
 app.get("/api/geoapify/reverse", async (req, res) => {
   try {
-    const parsed = import_zod2.z.object({ lat: import_zod2.z.string(), lng: import_zod2.z.string() }).parse(req.query);
-    const lat = (0, import_xss2.default)(parsed.lat);
-    const lng = (0, import_xss2.default)(parsed.lng);
-    const GEO_API_KEY = process.env.GEOAPIFY_API_KEY || "fallback_geoapify_key";
+    const parsed = import_zod3.z.object({ lat: import_zod3.z.string(), lng: import_zod3.z.string() }).parse(req.query);
+    const lat = (0, import_xss3.default)(parsed.lat);
+    const lng = (0, import_xss3.default)(parsed.lng);
+    const GEO_API_KEY = process.env.GEOAPIFY_API_KEY;
+    if (!GEO_API_KEY) {
+      return res.status(500).json({ error: "Server misconfiguration: GEOAPIFY_API_KEY is not set." });
+    }
     const url = `https://api.geoapify.com/v1/geocode/reverse?lat=${lat}&lon=${lng}&apiKey=${GEO_API_KEY}`;
     const response = await fetch(url);
     const data = await response.json();
@@ -1475,9 +1510,9 @@ app.post("/api/places/nearby", async (req, res) => {
     if (!apiKey) {
       return res.status(500).json({ error: "Google Maps API key not configured on server" });
     }
-    const body = import_zod2.z.record(import_zod2.z.any()).parse(req.body);
+    const body = req.body;
     const rawMask = req.headers["x-goog-fieldmask"];
-    const fieldMask = rawMask ? (0, import_xss2.default)(rawMask) : "places.displayName,places.location,places.nationalPhoneNumber,places.internationalPhoneNumber";
+    const fieldMask = rawMask ? (0, import_xss3.default)(rawMask) : "places.displayName,places.location,places.nationalPhoneNumber,places.internationalPhoneNumber";
     const placesUrl = `https://places.googleapis.com/v1/places:searchNearby`;
     const response = await fetch(placesUrl, {
       method: "POST",
@@ -1504,9 +1539,9 @@ app.post("/api/places/search", async (req, res) => {
     if (!apiKey) {
       return res.status(500).json({ error: "Google Maps API key not configured on server" });
     }
-    const body = import_zod2.z.record(import_zod2.z.any()).parse(req.body);
+    const body = req.body;
     const rawMask = req.headers["x-goog-fieldmask"];
-    const fieldMask = rawMask ? (0, import_xss2.default)(rawMask) : "places.displayName,places.location,places.formattedAddress";
+    const fieldMask = rawMask ? (0, import_xss3.default)(rawMask) : "places.displayName,places.location,places.formattedAddress";
     const placesUrl = `https://places.googleapis.com/v1/places:searchText`;
     const response = await fetch(placesUrl, {
       method: "POST",
@@ -1546,7 +1581,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(import_express2.default.static(import_path.default.join(process.cwd(), "dist")));
+    app.use(import_express3.default.static(import_path.default.join(process.cwd(), "dist")));
     app.get("*", (req, res) => {
       res.sendFile(import_path.default.join(process.cwd(), "dist", "index.html"));
     });
