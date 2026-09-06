@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">RoadSoS</string>
+    <string name="title_activity_main">RoadSoS</string>
+    <string name="package_name">com.roadsos.app</string>
+    <string name="custom_url_scheme">com.roadsos.app</string>
+</resources>
