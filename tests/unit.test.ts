@@ -1,20 +1,20 @@
 import { describe, it, expect } from 'vitest';
 
 // 1. G-Force Threshold Evaluation
-function evaluateGForce(x, y, z) {
+function evaluateGForce(x: number, y: number, z: number) {
   const force = Math.sqrt(x*x + y*y + z*z) / 9.81;
   return force;
 }
 
 // 2. Wake-word Matching
-function detectWakeWord(transcript, wakeWord = "neon") {
+function detectWakeWord(transcript: string, wakeWord = "neon") {
   const cleanTranscript = transcript.toLowerCase().trim();
   const count = (cleanTranscript.match(new RegExp(wakeWord, "g")) || []).length;
   return count >= 3;
 }
 
 // 3. ETA-based hospital selection
-function selectNearestHospital(hospitals) {
+function selectNearestHospital(hospitals: { name: string; eta: number }[]) {
   return hospitals.sort((a, b) => {
     // Assuming ETA is in seconds
     return a.eta - b.eta;
@@ -30,7 +30,7 @@ const SOS_STATES = {
   CANCELLED: "CANCELLED"
 };
 
-function sosTransition(currentState, event) {
+function sosTransition(currentState: string, event: string) {
   switch (currentState) {
     case SOS_STATES.NORMAL:
       if (event === "IMPACT_DETECTED") return SOS_STATES.DETECTED;

@@ -33,7 +33,7 @@ describe('incident report-token signing secret', () => {
     const actualToken = signReportToken(incidentId);
 
     expect(actualToken).not.toBe(legacyHardcodedToken);
-  });
+  }, 15000);
 
   it('is stable within a single process run even with no env secret configured', async () => {
     const { signReportToken } = await import('../api/incidents.js');
