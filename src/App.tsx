@@ -262,6 +262,33 @@ export default function App() {
   const [lastVerdict, setLastVerdict] = useState<CrashVerdict | null>(null);
   const pendingVerdictRef = useRef<CrashVerdict | null>(null);
   const [backgroundMode, setBackgroundMode] = useState<string>('none');
+  const [showMedicalProfile, setShowMedicalProfile] = useState(false);
+  const [quickContactLabel, setQuickContactLabel] = useState("");
+  const [quickContactNumber, setQuickContactNumber] = useState("");
+  const [medicalInfo, setMedicalInfo] = useState(() => {
+    const saved = localStorage.getItem('roadsos_medical');
+    const parsed = saved ? JSON.parse(saved) : null;
+    let fallback = {
+      name: '',
+      bloodGroup: '',
+      allergies: 'None',
+      emergencyContacts: [] as { label: string; number: string }[]
+    };
+    if (parsed) {
+      if (parsed.emergencyContact && !parsed.emergencyContacts) {
+        parsed.emergencyContacts = [{ label: 'Primary', number: parsed.emergencyContact }];
+        delete parsed.emergencyContact;
+      }
+      if (!parsed.emergencyContacts) {
+         parsed.emergencyContacts = fallback.emergencyContacts;
+      }
+      return { ...fallback, ...parsed };
+    }
+    return fallback;
+  });
+  const medicalInfoRef = useRef(medicalInfo);
+  useEffect(() => { medicalInfoRef.current = medicalInfo; }, [medicalInfo]);
+
   const [isDrivingMode, setIsDrivingMode] = useState(false);
   const isDrivingModeRef = useRef(isDrivingMode);
   useEffect(() => {
@@ -428,33 +455,6 @@ export default function App() {
   const [isDistressPending, setIsDistressPending] = useState(false);
   const isDistressPendingRef = useRef(false);
   const [countdownSeconds, setCountdownSeconds] = useState(5);
-
-  const [showMedicalProfile, setShowMedicalProfile] = useState(false);
-  const [quickContactLabel, setQuickContactLabel] = useState("");
-  const [quickContactNumber, setQuickContactNumber] = useState("");
-  const [medicalInfo, setMedicalInfo] = useState(() => {
-    const saved = localStorage.getItem('roadsos_medical');
-    const parsed = saved ? JSON.parse(saved) : null;
-    let fallback = {
-      name: '',
-      bloodGroup: '',
-      allergies: 'None',
-      emergencyContacts: [] as { label: string; number: string }[]
-    };
-    if (parsed) {
-      if (parsed.emergencyContact && !parsed.emergencyContacts) {
-        parsed.emergencyContacts = [{ label: 'Primary', number: parsed.emergencyContact }];
-        delete parsed.emergencyContact;
-      }
-      if (!parsed.emergencyContacts) {
-         parsed.emergencyContacts = fallback.emergencyContacts;
-      }
-      return { ...fallback, ...parsed };
-    }
-    return fallback;
-  });
-  const medicalInfoRef = useRef(medicalInfo);
-  useEffect(() => { medicalInfoRef.current = medicalInfo; }, [medicalInfo]);
 
   const [showTraumaGuide, setShowTraumaGuide] = useState(false);
 
