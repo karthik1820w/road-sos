@@ -189,7 +189,10 @@ export interface EngineDeps {
   fromNumber?: string;
   now?: () => number;
   drivingModeStore?: DrivingModeStore;
+  /** Number dispatched on VOICE_HELP / MEDICAL / CRASH incidents (HOSPITAL_NUMBER env var). */
   hospitalNumber?: string;
+  /** Number dispatched on MANUAL_SOS / SAFETY_WORD incidents (POLICE_NUMBER env var). */
+  policeNumber?: string;
 }
 
 export class IncidentEngine {
@@ -266,12 +269,33 @@ export class IncidentEngine {
   async dispatch(incident: Incident, baseUrl: string) {
     if (incident.state === "DISPATCHED" || incident.state === "ACKED") return incident;
 
-    // For HELP voice distress alerts, automatically include the emergency Hospital_NUMBER configured in .env
-    const rawHospitalNumber = this.deps.hospitalNumber || process.env.Hospital_NUMBER || process.env.HOSPITAL_NUMBER;
-    if (incident.kind === "VOICE_HELP" && rawHospitalNumber) {
-      const hosp = normalizePhone(rawHospitalNumber);
-      if (hosp && isValidE164(hosp) && !incident.contacts.includes(hosp)) {
-        incident.contacts.unshift(hosp);
+    // Determine which emergency-services number to prepend based on incident pathway:
+    //   MANUAL_SOS / SAFETY_WORD → POLICE_NUMBER (danger pathway)
+    //   VOICE_HELP / MEDICAL / CRASH → HOSPITAL_NUMBER (medical pathway)
+    const isDangerPathway = incident.kind === "MANUAL_SOS" || incident.kind === "SAFETY_WORD";
+    const isMedicalPathway = incident.kind === "VOICE_HELP" || incident.kind === "MEDICAL" || incident.kind === "CRASH";
+
+    if (isDangerPathway) {
+      const rawPoliceNumber = this.deps.policeNumber ?? process.env.POLICE_NUMBER;
+      if (rawPoliceNumber) {
+        const police = normalizePhone(rawPoliceNumber);
+        if (police && isValidE164(police) && !incident.contacts.includes(police)) {
+          incident.contacts.unshift(police);
+        }
+      } else {
+        console.warn(`[IncidentEngine] POLICE_NUMBER is not configured; dispatching to personal emergency contacts only (incident ${incident.id}).`);
+      }
+    }
+
+    if (isMedicalPathway) {
+      const rawHospitalNumber = this.deps.hospitalNumber ?? process.env.HOSPITAL_NUMBER;
+      if (rawHospitalNumber) {
+        const hosp = normalizePhone(rawHospitalNumber);
+        if (hosp && isValidE164(hosp) && !incident.contacts.includes(hosp)) {
+          incident.contacts.unshift(hosp);
+        }
+      } else {
+        console.warn(`[IncidentEngine] HOSPITAL_NUMBER is not configured; dispatching to personal emergency contacts only (incident ${incident.id}).`);
       }
     }
 
@@ -301,8 +325,9 @@ export class IncidentEngine {
     const smsBody = buildSmsBody(incident, reportUrl);
     const sayText = buildCallScript(incident);
 
-    // Contacts are processed concurrently; channels per contact sequentially (SMS first, then call)
-    await Promise.all(incident.contacts.map(async (to) => {
+    // Each contact is processed concurrently and independently (Promise.allSettled = per-target
+    // failure isolation: one failed recipient cannot abort others).
+    await Promise.allSettled(incident.contacts.map(async (to) => {
       await this.sendWithRetry(incident, "sms", to, async (client) => {
         const msg = await client.messages.create({
           to, from: this.deps.fromNumber!, body: smsBody,
@@ -330,6 +355,7 @@ export class IncidentEngine {
     this.emit(incident);
     return incident;
   }
+
 
   private async sendWithRetry(incident: Incident, channel: Channel, to: string, fn: (c: twilio.Twilio) => Promise<string>) {
     const delivery: Delivery = { id: crypto.randomUUID(), channel, to, status: "queued", attempts: 0, updatedAt: this.now() };

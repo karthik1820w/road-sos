@@ -748,10 +748,10 @@ export const GoogleMapComponent: React.FC<GoogleMapsViewProps> = (props) => {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
              {[
-                { lat: props.center.lat + 0.003, lng: props.center.lng + 0.004, name: "City General Trauma Hospital", type: 'GOVERNMENT', bedsAvailable: 12, phone: "+91-800-555-0101" },
-                { lat: props.center.lat - 0.005, lng: props.center.lng + 0.002, name: "Starlife Emergency Care", type: 'PRIVATE', bedsAvailable: 4, phone: "+91-800-555-0102" },
-                { lat: props.center.lat + 0.006, lng: props.center.lng - 0.003, name: "Metro District Clinic", type: 'GOVERNMENT', bedsAvailable: 25, phone: "+91-800-555-0103" },
-                { lat: props.center.lat - 0.002, lng: props.center.lng - 0.005, name: "Prime Health Specialty Clinic", type: 'PRIVATE', bedsAvailable: 8, phone: "+91-800-555-0104" }
+                { lat: props.center.lat + 0.003, lng: props.center.lng + 0.004, name: "City General Trauma Hospital", type: 'GOVERNMENT', bedsAvailable: 12, phone: "112" },
+                { lat: props.center.lat - 0.005, lng: props.center.lng + 0.002, name: "Starlife Emergency Care", type: 'PRIVATE', bedsAvailable: 4, phone: "112" },
+                { lat: props.center.lat + 0.006, lng: props.center.lng - 0.003, name: "Metro District Clinic", type: 'GOVERNMENT', bedsAvailable: 25, phone: "112" },
+                { lat: props.center.lat - 0.002, lng: props.center.lng - 0.005, name: "Prime Health Specialty Clinic", type: 'PRIVATE', bedsAvailable: 8, phone: "112" }
              ].map((h, i) => (
                 <div
                 key={`hosp-fallback-${i}`}

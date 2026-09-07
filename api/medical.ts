@@ -125,7 +125,7 @@ export async function fetchNearbyHospitals(lat: number, lng: number, radiusM = 1
       address: "Emergency Medical Zone",
       lat: lat + 0.015,
       lng: lng + 0.012,
-      phone: "+91-800-555-0101",
+      phone: "112",
       rating: 4.6,
     },
     {
@@ -133,7 +133,7 @@ export async function fetchNearbyHospitals(lat: number, lng: number, radiusM = 1
       address: "Civil Hospital Road",
       lat: lat - 0.018,
       lng: lng + 0.015,
-      phone: "+91-800-555-0102",
+      phone: "112",
       rating: 4.4,
     },
     {
@@ -141,7 +141,7 @@ export async function fetchNearbyHospitals(lat: number, lng: number, radiusM = 1
       address: "Metro Healthcare Hub",
       lat: lat + 0.022,
       lng: lng - 0.019,
-      phone: "+91-800-555-0103",
+      phone: "112",
       rating: 4.7,
     },
   ];

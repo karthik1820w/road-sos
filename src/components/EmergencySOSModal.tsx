@@ -8,7 +8,6 @@ interface EmergencySOSModalProps {
   isConfirmed: boolean;
   onClose: () => void;
   incident?: Incident | null;
-  hospitalNumber?: string;
   aiAnalysis?: AiMedicalAnalysis | null;
   recommendedHospitals?: RecommendedHospital[];
   onSelectHospitalNavigation?: (hospital: RecommendedHospital) => void;
@@ -19,7 +18,6 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
   isConfirmed, 
   onClose,
   incident,
-  hospitalNumber,
   aiAnalysis: propAiAnalysis,
   recommendedHospitals: propHospitals,
   onSelectHospitalNavigation,
@@ -39,7 +37,7 @@ export const EmergencySOSModal: React.FC<EmergencySOSModalProps> = ({
     ? incident.recommendedHospitals
     : propHospitals || [];
 
-  const effectiveHospitalNumber = hospitalNumber || (incident?.contacts && incident.contacts[0]) || "";
+  const effectiveHospitalNumber = (incident?.contacts && incident.contacts[0]) || "";
   const reportUrl = incident ? `/api/incidents/${incident.id}/report.pdf?t=${(incident as any).reportToken}` : null;
 
   return (

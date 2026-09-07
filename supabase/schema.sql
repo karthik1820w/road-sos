@@ -41,3 +41,25 @@ create table if not exists app_users (
 );
 alter table app_users enable row level security;
 -- Intentionally no policies: only accessed server-side via SUPABASE_SERVICE_ROLE_KEY.
+
+-- emergency_logs: durable record of every distress dispatch event.
+-- Stores pathway (danger/medical), trigger reason, resolved recipients, location, condition
+-- summary, and per-channel delivery status. Written before or concurrently with dispatch so
+-- a failed dispatch is still recorded. Server-side only (service role writes via incidentService).
+create table if not exists emergency_logs (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid references incidents(id) on delete set null,
+  device_token text not null,
+  pathway text not null check (pathway in ('danger', 'medical')),
+  trigger_reason text not null,
+  condition_summary text,
+  recipients jsonb not null default '[]',
+  location jsonb,
+  dispatch_status jsonb not null default '{}',
+  created_at timestamptz not null default now()
+);
+create index if not exists emergency_logs_incident_idx on emergency_logs (incident_id);
+create index if not exists emergency_logs_device_idx on emergency_logs (device_token);
+create index if not exists emergency_logs_created_idx on emergency_logs (created_at desc);
+alter table emergency_logs enable row level security;
+-- Intentionally no policies: all writes go through the API server via SUPABASE_SERVICE_ROLE_KEY.

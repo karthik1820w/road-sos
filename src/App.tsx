@@ -63,18 +63,14 @@ export default function App() {
     userPhoneRef.current = userPhone;
   }, [userPhone]);
 
-  const [hospitalNumber, setHospitalNumber] = useState<string>(() => localStorage.getItem('roadsos_hospital_number') || "");
-  const hospitalNumberRef = useRef(hospitalNumber);
-  useEffect(() => { hospitalNumberRef.current = hospitalNumber; }, [hospitalNumber]);
+  const [isHospitalConfigured, setIsHospitalConfigured] = useState<boolean>(() => localStorage.getItem('roadsos_hosp_configured') === 'true');
 
   useEffect(() => {
     fetch('/api/config/hospital')
       .then(r => r.json())
       .then(d => {
-        if (d.hospitalNumber) {
-          setHospitalNumber(d.hospitalNumber);
-          localStorage.setItem('roadsos_hospital_number', d.hospitalNumber);
-        }
+        setIsHospitalConfigured(d.isConfigured);
+        localStorage.setItem('roadsos_hosp_configured', d.isConfigured ? 'true' : 'false');
       })
       .catch(() => {});
   }, []);
@@ -424,20 +420,11 @@ export default function App() {
     try {
       await executeWithOfflineFallback('/api/status/driving', 'POST', { active: newState, phone: userPhone, name: medicalInfo.name });
       
-      try {
-        const res = await fetch('/api/config/twilio');
-        const data = await res.json();
-        const twilioNum = data.phoneNumber || "YOUR_TWILIO_NUMBER";
-        
-        if (newState) {
-           speakNotification("Driving Mode Engaged. Safe travels.");
-        } else {
-           speakNotification("Driving Mode Disabled.");
-        }
-      } catch (err) {
-        console.error("Could not fetch twilio config for call forwarding", err);
+      if (newState) {
+         speakNotification("Driving Mode Engaged. Safe travels.");
+      } else {
+         speakNotification("Driving Mode Disabled.");
       }
-      
     } catch (e) {
       console.error("Failed to sync driving status:", e);
     }
@@ -759,11 +746,7 @@ export default function App() {
     if (loc) { try { const a = await geoapifyService.reverseGeocode(loc.lat, loc.lng); if (a && a !== 'Unknown Location') address = a; } catch { /* optional */ } }
 
     const mInfo = medicalInfoRef.current;
-    const hosp = hospitalNumberRef.current;
     const extra = [...(opts.extraContacts || [])];
-    if (kind === 'VOICE_HELP' && hosp && !extra.includes(hosp)) {
-      extra.push(hosp);
-    }
     const contacts = [...new Set([...contactsFromProfile(mInfo), ...extra])];
     if (contacts.length === 0 && !opts.silent) {
       speakNotification("No emergency contact is saved. Opening your dialer for one one two.");
@@ -847,13 +830,91 @@ export default function App() {
     isConfirmedHelpArrivingRef.current = false;
   };
 
-  // Backwards-compatible wrappers used across the voice command handlers
-  const executeNeonDistress = () => {
+  // ── Pathway A: Danger Alert ──────────────────────────────────────────────────
+  // Covers: Hold-SOS button press, Silent Safety Word (NEON x3).
+  // Server-side: POLICE_NUMBER is prepended to contacts (MANUAL_SOS / SAFETY_WORD kind).
+  const dispatchDangerAlert = (reason: string, opts: { silent?: boolean; kind?: IncidentKind } = {}) => {
     forceDrivingModeOff('distress_word');
-    return raiseSOS('SAFETY_WORD', `Safety word "${safetyWord}" spoken 3 times`, { silent: true });
+    const kind: IncidentKind = opts.kind ?? 'MANUAL_SOS';
+    return raiseSOS(kind, reason, { silent: opts.silent ?? false });
   };
-  const executeDistressBroadcast = (reason: string, silent: boolean = false) => raiseSOS(reason.toLowerCase().includes('help') ? 'VOICE_HELP' : 'MANUAL_SOS', reason, { silent });
-  const executeSecretDistressBroadcast = () => raiseSOS('MANUAL_SOS', 'SOS button held for 5 seconds', { silent: true });
+
+  // ── Pathway B: Medical Alert ─────────────────────────────────────────────────
+  // Covers: HELP x3, G-force crash detection (after "Are you okay?" probe fails).
+  // Server-side: HOSPITAL_NUMBER is prepended to contacts (VOICE_HELP kind).
+  const dispatchMedicalAlert = (
+    reason: string,
+    opts: { conditionSummary?: string | null; verdict?: CrashVerdict | null; silent?: boolean } = {}
+  ) => {
+    const fullReason = opts.conditionSummary
+      ? `${reason} — Reported condition: ${opts.conditionSummary}`
+      : reason;
+    return raiseSOS('VOICE_HELP', fullReason, { silent: opts.silent ?? false, verdict: opts.verdict ?? null });
+  };
+
+  // ── First Aid Sequencer ───────────────────────────────────────────────────────
+  // Asks the user what is wrong (10-second bounded window), captures condition summary,
+  // runs first-aid guidance, then dispatches.  Never waits indefinitely.
+  const isWaitingForConditionRef = useRef(false);
+  const conditionCaptureTmRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingFirstAidReasonRef = useRef<string>('');
+  const pendingFirstAidVerdictRef = useRef<CrashVerdict | null>(null);
+
+  const launchFirstAidAndDispatch = (baseReason: string, opts: { verdict?: CrashVerdict | null } = {}) => {
+    if (isBroadcastingRef.current) return;
+    forceDrivingModeOff('manual_sos');
+
+    setIsAIFirstAidActive(true);
+    isAIFirstAidActiveRef.current = true;
+    isWaitingForConditionRef.current = true;
+    pendingFirstAidReasonRef.current = baseReason;
+    pendingFirstAidVerdictRef.current = opts.verdict ?? null;
+
+    speakNotification("What's wrong? Are you hurt? Where does it hurt?");
+    setAiFirstAidResponse("What's wrong? Are you hurt? Where does it hurt?");
+
+    // Bounded 10-second timeout — dispatches with unresponsive fallback if user says nothing
+    if (conditionCaptureTmRef.current) clearTimeout(conditionCaptureTmRef.current);
+    conditionCaptureTmRef.current = setTimeout(() => {
+      if (!isWaitingForConditionRef.current) return; // already answered
+      isWaitingForConditionRef.current = false;
+      console.log('[First Aid Sequencer] No response within 10 s — dispatching with unresponsive fallback.');
+      dispatchMedicalAlert(baseReason, {
+        conditionSummary: 'Condition unknown — user unresponsive to first aid assistant',
+        verdict: opts.verdict,
+        silent: false,
+      });
+    }, 10000);
+  };
+
+  // Called by background recognition handler when the user speaks their condition description
+  const captureConditionAndDispatch = (conditionText: string) => {
+    if (!isWaitingForConditionRef.current) return;
+    if (conditionCaptureTmRef.current) clearTimeout(conditionCaptureTmRef.current);
+    isWaitingForConditionRef.current = false;
+
+    const reason = pendingFirstAidReasonRef.current;
+    const verdict = pendingFirstAidVerdictRef.current;
+    const conditionSummary = `User reports: ${conditionText.trim()}`;
+    console.log(`[First Aid Sequencer] Condition captured: "${conditionSummary}". Dispatching.`);
+
+    // Run first-aid guidance concurrently (non-blocking — does not delay dispatch)
+    handleAIFirstAid(conditionText);
+    dispatchMedicalAlert(reason, { conditionSummary, verdict, silent: false });
+  };
+
+  // ── Compatibility aliases (thin wrappers over the new pathways) ──────────────
+  // Kept so existing call sites in voice handlers and ChatbotModal continue to work.
+  const executeNeonDistress = () => dispatchDangerAlert(
+    `Safety word "${safetyWord}" spoken 3 times`, { silent: true, kind: 'SAFETY_WORD' }
+  );
+  const executeDistressBroadcast = (reason: string, silent: boolean = false) =>
+    reason.toLowerCase().includes('help')
+      ? dispatchMedicalAlert(reason, { silent })
+      : dispatchDangerAlert(reason, { silent });
+  const executeSecretDistressBroadcast = () => dispatchDangerAlert('SOS button held for 5 seconds', { silent: true });
+
+
 
   const handleNavigateToHospital = (hospital: RecommendedHospital) => {
     setIsSosModalOpen(false);
@@ -1072,17 +1133,19 @@ export default function App() {
     }, timeoutS * 1000);
   };
 
-  const executeHelpFunctionality = async (reason: string) => {
+  const executeHelpFunctionality = (reason: string) => {
     if (safetyCheckTimerRef.current) clearTimeout(safetyCheckTimerRef.current);
     setIsSafetyChecking(false);
     isSafetyCheckingRef.current = false;
     setSafetyCheckRound(0);
 
-    console.log(`[HELP Functionality] Raising incident: ${reason}`);
+    console.log(`[HELP Functionality] Routing to First Aid sequencer: ${reason}`);
     const verdict = pendingVerdictRef.current;
     pendingVerdictRef.current = null;
-    await raiseSOS(verdict ? 'CRASH' : 'MANUAL_SOS', reason, { silent: false, verdict });
+    // Route through Pathway B: activates First Aid Assistant, waits 10 s, then dispatches
+    launchFirstAidAndDispatch(reason, { verdict });
   };
+
 
   const cancelSafetyVerification = () => {
     if (safetyCheckTimerRef.current) clearTimeout(safetyCheckTimerRef.current);
@@ -1142,8 +1205,10 @@ export default function App() {
       runMLRecovery();
       return;
     }
-    executeSecretDistressBroadcast();
+    // Pathway A: Danger Alert — server-side POLICE_NUMBER is automatically prepended
+    dispatchDangerAlert('SOS button held for 5 seconds', { silent: true });
   };
+
 
   // Background Speech Recognition for Safety Word
   useEffect(() => {
@@ -1207,8 +1272,9 @@ export default function App() {
         }
         
         const currentNow = Date.now();
-        rollingTranscriptsRef.current = rollingTranscriptsRef.current.filter(x => currentNow - x.time <= 20000);
+        rollingTranscriptsRef.current = rollingTranscriptsRef.current.filter(x => currentNow - x.time <= 10000);
         const rollingText = rollingTranscriptsRef.current.map(x => x.text).join(' ') + ' ' + cleanInterim;
+
 
         if (isAIFirstAidActiveRef.current) {
             let activeText = cleanCombined;
@@ -1275,19 +1341,29 @@ export default function App() {
           }
         }
 
+        // ── First Aid Sequencer: capture user's spoken condition ──────────────
+        // This runs before the HELP x3 check so condition text is captured first.
+        if (isWaitingForConditionRef.current && cleanFinal.length > 0) {
+            captureConditionAndDispatch(cleanFinal);
+            rollingTranscriptsRef.current = [];
+            return;
+        }
+
         const helpRegex = /\b(help|helps|helping|howp|health)\b/g;
-        if ((rollingText.match(helpRegex) || []).length >= 3 && !isBroadcastingRef.current) {
-            const recentlyTriggered = logsRef.current.some(l => 
+        if ((rollingText.match(helpRegex) || []).length >= 3 && !isBroadcastingRef.current && !isWaitingForConditionRef.current) {
+            const recentlyTriggered = logsRef.current.some(l =>
                 l.reason.includes("HELP triggered 3 times") && (Date.now() - new Date(l.timestamp).getTime() < 60000)
             );
             if (!recentlyTriggered) {
-                console.log("[Wake Word] HELP 3x Triggered. Initiating distress.");
+                console.log("[Wake Word] HELP 3x Triggered. Launching First Aid sequencer (medical pathway).");
                 saveLogEntry(`Emergency word HELP triggered 3 times`, userLocation);
-                executeDistressBroadcast("Voice activated emergency distress alert (HELP spoken 3 times)", false);
+                // Route to Pathway B: activates First Aid Assistant, waits 10 s, then dispatches
+                launchFirstAidAndDispatch("Voice activated emergency distress alert (HELP spoken 3 times)");
             }
             rollingTranscriptsRef.current = [];
             return;
         }
+
 
         // 2. Cancellation Check (Instant)
         const wantsToCancel = ["cancel", "safe", "stop", "abort", "reset", "wait", "dismiss", "false"].some(word => cleanCombined.includes(word)) || 
@@ -2663,7 +2739,7 @@ export default function App() {
                     <div className="flex items-center justify-between">
                       <div>
                         <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest block">Automated Emergency Hospital (.env)</span>
-                        <span className="text-sm font-bold text-white">{hospitalNumber || "Not configured in .env (Hospital_NUMBER)"}</span>
+                        <span className="text-sm font-bold text-white">{isHospitalConfigured ? "Secured on server" : "Not configured in .env (HOSPITAL_NUMBER)"}</span>
                       </div>
                       <span className="px-2.5 py-1 bg-blue-500/10 text-blue-300 border border-blue-500/20 rounded-md text-[9px] font-black uppercase tracking-wider">
                         Dispatched on HELP x3
@@ -2706,7 +2782,7 @@ export default function App() {
                 </div>
                 <div>
                   <p className="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-1">Hospital Contact</p>
-                  <p className="text-sm font-black text-white">{hospitalNumber || 'N/A'}</p>
+                  <p className="text-sm font-black text-white">{isHospitalConfigured ? "Secured on server" : "N/A"}</p>
                 </div>
               </div>
             )}
@@ -2936,7 +3012,6 @@ export default function App() {
           isConfirmed={isConfirmedHelpArriving || isConfirmedNeon} 
           onClose={() => setIsSosModalOpen(false)} 
           incident={activeIncident}
-          hospitalNumber={hospitalNumber}
           aiAnalysis={currentMedicalAnalysis || activeIncident?.aiMedicalAnalysis}
           recommendedHospitals={currentRecommendedHospitals.length > 0 ? currentRecommendedHospitals : (activeIncident?.recommendedHospitals || [])}
           onSelectHospitalNavigation={handleNavigateToHospital}

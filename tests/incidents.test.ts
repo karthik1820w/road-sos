@@ -178,9 +178,9 @@ describe('incident HTTP API + Twilio webhooks', () => {
     expect(buf.subarray(0, 4).toString()).toBe('%PDF');
   });
 
-  it('VOICE_HELP automatically includes Hospital_NUMBER and attaches AI medical analysis and recommended hospitals', async () => {
+  it('VOICE_HELP automatically prepends hospitalNumber and attaches AI medical analysis and recommended hospitals', async () => {
     const tw = fakeTwilio();
-    const hospNumber = '+916361892311';
+    const hospNumber = '+919999900099'; // synthetic fixture
     const testEngine = new IncidentEngine({ store, getTwilio: () => tw.client, fromNumber: '+15550000000', hospitalNumber: hospNumber });
     const inc = await testEngine.create({
       ...baseInput(['+919999900001']),

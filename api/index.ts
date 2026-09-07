@@ -629,7 +629,9 @@ const incidentEngine = new IncidentEngine({
   getTwilio,
   fromNumber: process.env.TWILIO_FROM_NUMBER,
   drivingModeStore: drivingStore,
-  hospitalNumber: process.env.Hospital_NUMBER || process.env.HOSPITAL_NUMBER,
+  // Support both the canonical HOSPITAL_NUMBER and the legacy mixed-case spelling for backwards compat
+  hospitalNumber: process.env.HOSPITAL_NUMBER ?? process.env.Hospital_NUMBER,
+  policeNumber: process.env.POLICE_NUMBER,
 });
 app.use(createIncidentRouter(incidentEngine, incidentStore, io));
 
@@ -648,14 +650,17 @@ app.get("/api/config/maps", (req, res) => {
   res.json({ apiKey: process.env.GOOGLE_MAPS_BROWSER_KEY || process.env.GOOGLE_MAPS_PLATFORM_KEY || "" });
 });
 
-app.get("/api/config/twilio", (req, res) => {
-  res.json({ phoneNumber: process.env.TWILIO_FROM_NUMBER || null });
+app.get("/api/config/hospital", (req, res) => {
+  const num = process.env.HOSPITAL_NUMBER ?? process.env.Hospital_NUMBER;
+  res.json({ isConfigured: !!num });
 });
 
-app.get("/api/config/hospital", (req, res) => {
-  const num = process.env.Hospital_NUMBER || process.env.HOSPITAL_NUMBER || null;
-  res.json({ hospitalNumber: num ? normalizePhone(num) : null });
+app.get("/api/config/police", (req, res) => {
+  const num = process.env.POLICE_NUMBER;
+  res.json({ isConfigured: !!num });
 });
+
+
 
 app.post("/api/medical/analyze-and-recommend", async (req, res) => {
   try {
