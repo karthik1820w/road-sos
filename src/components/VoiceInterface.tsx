@@ -288,11 +288,27 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
         reason: incidentText,
         location: userLocation,
         address,
-        patient: { name: mInfo.name || '', phone: localStorage.getItem('roadSosUserPhone') || undefined, bloodGroup: mInfo.bloodGroup, allergies: mInfo.allergies },
+        patient: { name: mInfo.name || '', phone: localStorage.getItem('roadSosUserPhone') || undefined, bloodGroup: mInfo.bloodGroup, allergies: mInfo.allergies, conditions: mInfo.conditions },
         contacts: contactsFromProfile(mInfo),
       });
 
-      if (outcome.incident) watchIncident(outcome.incident);
+      if (outcome.incident) {
+        watchIncident(outcome.incident);
+        if (outcome.incident.recommendedHospitals && outcome.incident.recommendedHospitals.length > 0) {
+          const recFacilities = outcome.incident.recommendedHospitals.map(h => ({
+            name: h.name,
+            type: 'HOSPITAL',
+            location: { lat: h.lat, lng: h.lng },
+            dispatch_number: h.phone || '112',
+            address: h.address || `${h.distanceKm} km away`,
+          }));
+          setResult({
+            mode: 'EMERGENCY',
+            content: `${who} needs help. ${outcome.incident.aiMedicalAnalysis ? `Assessment: ${outcome.incident.aiMedicalAnalysis.condition}.` : `Issue: ${incidentText}.`}`,
+            facilities: recFacilities,
+          });
+        }
+      }
       if (outcome.error === 'NO_CONTACTS') setDispatchNote('No emergency contacts saved — your dialer was opened for 112. Add contacts in Medical Profile.');
       else if (outcome.error === 'OFFLINE') setDispatchNote('Offline — the alert was queued and your messages app opened so you can send it now.');
       else if (outcome.error === 'ALL_CHANNELS_FAILED') setDispatchNote('Automatic SMS/calls failed — your messages app was opened with the alert.');
@@ -336,7 +352,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
 
     if ((helpCountRef.current >= 3 || textLower.includes("help help help") || textLower.includes("help, help, help") || textLower.includes("help me, help me, help me")) && emergencyState === 'NORMAL') {
       setEmergencyState('DISPATCH_PENDING');
-      speak("Initiating urgent distress protocol. Dispatching calls and SMS alerts to nearby hospitals and ambulance stations.");
+      speak("Initiating urgent distress protocol. Automated call, message, and medical report dispatched to hospital and emergency contacts.");
       setTranscript("Help! Help! Help!");
       setState('RESULT');
       helpCountRef.current = 0;

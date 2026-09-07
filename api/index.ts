@@ -10,8 +10,9 @@ import { Server } from "socket.io";
 import cookieParser from "cookie-parser";
 import { z } from "zod";
 import xss from "xss";
-import { IncidentEngine, MemoryIncidentStore, SupabaseMirroredStore, createIncidentRouter } from "./incidents.js";
+import { IncidentEngine, MemoryIncidentStore, SupabaseMirroredStore, createIncidentRouter, normalizePhone } from "./incidents.js";
 import { createDrivingRouter, MemoryDrivingModeStore, SupabaseMirroredDrivingModeStore } from "./drivingMode.js";
+import { analyzeMedicalConditionAndRecommendHospitals } from "./medical.js";
 
 dotenv.config();
 
@@ -628,6 +629,7 @@ const incidentEngine = new IncidentEngine({
   getTwilio,
   fromNumber: process.env.TWILIO_FROM_NUMBER,
   drivingModeStore: drivingStore,
+  hospitalNumber: process.env.Hospital_NUMBER || process.env.HOSPITAL_NUMBER,
 });
 app.use(createIncidentRouter(incidentEngine, incidentStore, io));
 
@@ -648,6 +650,33 @@ app.get("/api/config/maps", (req, res) => {
 
 app.get("/api/config/twilio", (req, res) => {
   res.json({ phoneNumber: process.env.TWILIO_FROM_NUMBER || null });
+});
+
+app.get("/api/config/hospital", (req, res) => {
+  const num = process.env.Hospital_NUMBER || process.env.HOSPITAL_NUMBER || null;
+  res.json({ hospitalNumber: num ? normalizePhone(num) : null });
+});
+
+app.post("/api/medical/analyze-and-recommend", async (req, res) => {
+  try {
+    const schema = z.object({
+      patient: z.object({
+        name: z.string().optional(),
+        phone: z.string().optional(),
+        bloodGroup: z.string().optional(),
+        allergies: z.string().optional(),
+        conditions: z.string().optional(),
+      }),
+      reason: z.string().default("Voice activated emergency distress alert (HELP spoken 3 times)"),
+      sensorSummary: z.record(z.string(), z.any()).optional(),
+      location: z.object({ lat: z.number(), lng: z.number() }).optional(),
+    });
+    const parsed = schema.parse(req.body);
+    const result = await analyzeMedicalConditionAndRecommendHospitals(parsed);
+    res.json(result);
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message || "Medical analysis failed" });
+  }
 });
 
 app.post("/api/ai/voice-process", async (req, res) => {

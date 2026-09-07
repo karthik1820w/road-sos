@@ -177,4 +177,39 @@ describe('incident HTTP API + Twilio webhooks', () => {
     const buf = await renderIncidentPdf(inc);
     expect(buf.subarray(0, 4).toString()).toBe('%PDF');
   });
+
+  it('VOICE_HELP automatically includes Hospital_NUMBER and attaches AI medical analysis and recommended hospitals', async () => {
+    const tw = fakeTwilio();
+    const hospNumber = '+916361892311';
+    const testEngine = new IncidentEngine({ store, getTwilio: () => tw.client, fromNumber: '+15550000000', hospitalNumber: hospNumber });
+    const inc = await testEngine.create({
+      ...baseInput(['+919999900001']),
+      kind: 'VOICE_HELP',
+      reason: 'Voice activated emergency distress alert (HELP spoken 3 times)',
+      patient: { name: 'Karthik', bloodGroup: 'O+', conditions: 'Asthma' }
+    });
+
+    await testEngine.dispatch(inc, 'https://example.test');
+
+    // Hospital_NUMBER was automatically prepended to contacts
+    expect(inc.contacts).toContain(hospNumber);
+    // Medical analysis was generated and attached
+    expect(inc.aiMedicalAnalysis).toBeDefined();
+    expect(inc.aiMedicalAnalysis?.condition).toBeTruthy();
+    expect(inc.recommendedHospitals).toBeDefined();
+    expect(inc.recommendedHospitals!.length).toBeGreaterThan(0);
+
+    // Messages sent to both contacts (patient emergency contact AND Hospital_NUMBER)
+    const targets = tw.messages.map((m: any) => m.to);
+    expect(targets).toContain(hospNumber);
+    expect(targets).toContain('+919999900001');
+
+    // Both SMS and call were placed to Hospital_NUMBER
+    const callTargets = tw.calls.map((c: any) => c.to);
+    expect(callTargets).toContain(hospNumber);
+
+    // Render handover PDF containing the medical analysis and recommended hospitals
+    const pdfBuf = await renderIncidentPdf(inc);
+    expect(pdfBuf.subarray(0, 4).toString()).toBe('%PDF');
+  });
 });

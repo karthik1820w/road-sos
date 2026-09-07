@@ -27,7 +27,7 @@ import TripHistory from './components/TripHistory';
 import { PermissionsModal } from './components/PermissionsModal';
 import { EmergencySOSModal } from './components/EmergencySOSModal';
 import { GForceScatterPlot } from './components/GForceScatterPlot';
-import { raiseIncident, observeIncident, observeDrivingMode, cancelIncident, closeIncident, contactsFromProfile, flushPendingIncidents, openScheme, getDeviceToken, type Incident, type IncidentKind, type DispatchOutcome } from './services/incidentService';
+import { raiseIncident, observeIncident, observeDrivingMode, cancelIncident, closeIncident, contactsFromProfile, flushPendingIncidents, openScheme, getDeviceToken, type Incident, type IncidentKind, type DispatchOutcome, type AiMedicalAnalysis, type RecommendedHospital } from './services/incidentService';
 import { CrashDetector, summarizeVerdict, type CrashVerdict } from './safety/crashDetector';
 import { SafetyWordMatcher, PorcupineWakeWordEngine, loadSafetyWord, saveSafetyWord, validateSafetyWord, type StoredSafetyWord } from './safety/wakeWord';
 import { backgroundService } from './services/backgroundService';
@@ -62,6 +62,25 @@ export default function App() {
   useEffect(() => {
     userPhoneRef.current = userPhone;
   }, [userPhone]);
+
+  const [hospitalNumber, setHospitalNumber] = useState<string>(() => localStorage.getItem('roadsos_hospital_number') || "");
+  const hospitalNumberRef = useRef(hospitalNumber);
+  useEffect(() => { hospitalNumberRef.current = hospitalNumber; }, [hospitalNumber]);
+
+  useEffect(() => {
+    fetch('/api/config/hospital')
+      .then(r => r.json())
+      .then(d => {
+        if (d.hospitalNumber) {
+          setHospitalNumber(d.hospitalNumber);
+          localStorage.setItem('roadsos_hospital_number', d.hospitalNumber);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const [currentMedicalAnalysis, setCurrentMedicalAnalysis] = useState<AiMedicalAnalysis | null>(null);
+  const [currentRecommendedHospitals, setCurrentRecommendedHospitals] = useState<RecommendedHospital[]>([]);
   const [isEmergency, setIsEmergency] = useState(false);
   const isEmergencyRef = useRef(isEmergency);
   useEffect(() => {
@@ -272,6 +291,7 @@ export default function App() {
       name: '',
       bloodGroup: '',
       allergies: 'None',
+      conditions: 'None',
       emergencyContacts: [] as { label: string; number: string }[]
     };
     if (parsed) {
@@ -739,9 +759,40 @@ export default function App() {
     if (loc) { try { const a = await geoapifyService.reverseGeocode(loc.lat, loc.lng); if (a && a !== 'Unknown Location') address = a; } catch { /* optional */ } }
 
     const mInfo = medicalInfoRef.current;
-    const contacts = [...new Set([...contactsFromProfile(mInfo), ...(opts.extraContacts || [])])];
+    const hosp = hospitalNumberRef.current;
+    const extra = [...(opts.extraContacts || [])];
+    if (kind === 'VOICE_HELP' && hosp && !extra.includes(hosp)) {
+      extra.push(hosp);
+    }
+    const contacts = [...new Set([...contactsFromProfile(mInfo), ...extra])];
     if (contacts.length === 0 && !opts.silent) {
       speakNotification("No emergency contact is saved. Opening your dialer for one one two.");
+    }
+
+    // For HELP voice distress, fetch Gemini condition analysis & hospital recommendations
+    if (kind === 'VOICE_HELP') {
+      fetch('/api/medical/analyze-and-recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patient: { name: mInfo.name, phone: userPhoneRef.current || undefined, bloodGroup: mInfo.bloodGroup, allergies: mInfo.allergies, conditions: mInfo.conditions },
+          reason,
+          sensorSummary: opts.verdict ? summarizeVerdict(opts.verdict) : { peakG },
+          location: loc,
+        }),
+      })
+        .then(r => r.json())
+        .then(med => {
+          if (med.analysis) setCurrentMedicalAnalysis(med.analysis);
+          if (med.recommendedHospitals && med.recommendedHospitals.length > 0) {
+            setCurrentRecommendedHospitals(med.recommendedHospitals);
+            const top = med.recommendedHospitals[0];
+            if (!opts.silent) {
+              speakNotification(`Distress alert and medical report dispatched to hospital. Best recommended hospital is ${top.name}, ${top.distanceKm} kilometers away. Route navigation is ready.`);
+            }
+          }
+        })
+        .catch(e => console.warn("[Medical API] analyze-and-recommend failed:", e));
     }
 
     const outcome = await raiseIncident({
@@ -757,6 +808,10 @@ export default function App() {
 
     setLastDispatch(outcome);
     if (outcome.incident) {
+      if (outcome.incident.aiMedicalAnalysis) setCurrentMedicalAnalysis(outcome.incident.aiMedicalAnalysis);
+      if (outcome.incident.recommendedHospitals && outcome.incident.recommendedHospitals.length > 0) {
+        setCurrentRecommendedHospitals(outcome.incident.recommendedHospitals);
+      }
       setActiveIncident(outcome.incident);
       incidentUnsubRef.current?.();
       incidentUnsubRef.current = observeIncident(outcome.incident.id, (inc) => {
@@ -799,6 +854,18 @@ export default function App() {
   };
   const executeDistressBroadcast = (reason: string, silent: boolean = false) => raiseSOS(reason.toLowerCase().includes('help') ? 'VOICE_HELP' : 'MANUAL_SOS', reason, { silent });
   const executeSecretDistressBroadcast = () => raiseSOS('MANUAL_SOS', 'SOS button held for 5 seconds', { silent: true });
+
+  const handleNavigateToHospital = (hospital: RecommendedHospital) => {
+    setIsSosModalOpen(false);
+    if (hospital.name) {
+      setVoiceMapQuery(`navigate to ${hospital.name}`);
+      const mapElem = document.getElementById('google-map-section');
+      if (mapElem) mapElem.scrollIntoView({ behavior: 'smooth' });
+    }
+    if (hospital.mapsUrl) {
+      window.open(hospital.mapsUrl, '_blank');
+    }
+  };
 
   const generatePDFReport = () => {
     const doc = new jsPDF();
@@ -2469,8 +2536,7 @@ export default function App() {
                 <div className="space-y-4">
                   <div>
                     <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1 block">Full Name</label>
-                    <input 
-                      type="text" 
+                    <input type="text"
                       value={medicalInfo.name}
                       onChange={(e) => setMedicalInfo({...medicalInfo, name: e.target.value})}
                       className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-3 text-sm font-bold focus:border-blue-500 outline-none"
@@ -2584,6 +2650,29 @@ export default function App() {
                       className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-3 text-sm font-bold focus:border-blue-500 outline-none"
                     />
                   </div>
+                  <div>
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1 block">Pre-Existing Conditions / Diseases</label>
+                    <input type="text"
+                      placeholder="e.g. Asthma, Diabetes, Hypertension, Cardiac condition"
+                      value={medicalInfo.conditions || ''}
+                      onChange={(e) => setMedicalInfo({...medicalInfo, conditions: e.target.value})}
+                      className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-3 text-sm font-bold focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                  <div className="p-4 bg-slate-950/80 border border-blue-500/20 rounded-2xl">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest block">Automated Emergency Hospital (.env)</span>
+                        <span className="text-sm font-bold text-white">{hospitalNumber || "Not configured in .env (Hospital_NUMBER)"}</span>
+                      </div>
+                      <span className="px-2.5 py-1 bg-blue-500/10 text-blue-300 border border-blue-500/20 rounded-md text-[9px] font-black uppercase tracking-wider">
+                        Dispatched on HELP x3
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-2">
+                      When calling "HELP" 3 times, an automated distress call, SMS, and your signed medical handover report with GPS coordinates are automatically sent to this hospital.
+                    </p>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -2610,6 +2699,14 @@ export default function App() {
                 <div>
                   <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Allergies</p>
                   <p className="text-sm font-black text-white">{medicalInfo.allergies}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Conditions</p>
+                  <p className="text-sm font-black text-white">{medicalInfo.conditions || 'None'}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-1">Hospital Contact</p>
+                  <p className="text-sm font-black text-white">{hospitalNumber || 'N/A'}</p>
                 </div>
               </div>
             )}
@@ -2838,6 +2935,11 @@ export default function App() {
           isOpen={isSosModalOpen} 
           isConfirmed={isConfirmedHelpArriving || isConfirmedNeon} 
           onClose={() => setIsSosModalOpen(false)} 
+          incident={activeIncident}
+          hospitalNumber={hospitalNumber}
+          aiAnalysis={currentMedicalAnalysis || activeIncident?.aiMedicalAnalysis}
+          recommendedHospitals={currentRecommendedHospitals.length > 0 ? currentRecommendedHospitals : (activeIncident?.recommendedHospitals || [])}
+          onSelectHospitalNavigation={handleNavigateToHospital}
         />
       </div>
         </APIProvider>

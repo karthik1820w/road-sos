@@ -25,6 +25,28 @@ export interface Delivery {
   updatedAt: number;
 }
 
+export interface AiMedicalAnalysis {
+  condition: string;
+  severity: 'CRITICAL' | 'HIGH' | 'MODERATE' | 'MILD';
+  possibleDiseasesOrInjuries: string[];
+  firstAidInstructions: string[];
+  specialtiesNeeded: string[];
+  triageSummary: string;
+}
+
+export interface RecommendedHospital {
+  name: string;
+  address?: string;
+  distanceKm: number;
+  phone?: string;
+  lat: number;
+  lng: number;
+  rating?: number;
+  userRatingCount?: number;
+  recommendationReason: string;
+  mapsUrl: string;
+}
+
 export interface Incident {
   id: string;
   kind: IncidentKind;
@@ -40,6 +62,8 @@ export interface Incident {
   deliveries: Delivery[];
   ack?: { by: string; at: number; via: string };
   history: { state: IncidentState; at: number; note?: string }[];
+  aiMedicalAnalysis?: AiMedicalAnalysis;
+  recommendedHospitals?: RecommendedHospital[];
 }
 
 export interface CreateIncidentInput {
@@ -51,6 +75,8 @@ export interface CreateIncidentInput {
   sensorSummary?: Record<string, number | string | boolean>;
   patient: Incident['patient'];
   contacts: string[];
+  aiMedicalAnalysis?: AiMedicalAnalysis;
+  recommendedHospitals?: RecommendedHospital[];
 }
 
 export interface DispatchSummary { total: number; sent: number; failed: number; allFailed: boolean }

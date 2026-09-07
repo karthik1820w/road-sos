@@ -27,6 +27,7 @@ import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
 import type { Server as SocketServer } from "socket.io";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { type AiMedicalAnalysis, type RecommendedHospital, analyzeMedicalConditionAndRecommendHospitals } from "./medical.js";
 
 // ───────────────────────────── Types ─────────────────────────────
 
@@ -64,6 +65,8 @@ export interface Incident {
   ack?: { by: string; at: number; via: "call_keypress" | "sms_reply" | "console" };
   history: { state: IncidentState; at: number; note?: string }[];
   reportToken: string;
+  aiMedicalAnalysis?: AiMedicalAnalysis;
+  recommendedHospitals?: RecommendedHospital[];
 }
 
 const TRANSITIONS: Record<IncidentState, IncidentState[]> = {
@@ -186,6 +189,7 @@ export interface EngineDeps {
   fromNumber?: string;
   now?: () => number;
   drivingModeStore?: DrivingModeStore;
+  hospitalNumber?: string;
 }
 
 export class IncidentEngine {
@@ -261,6 +265,33 @@ export class IncidentEngine {
    */
   async dispatch(incident: Incident, baseUrl: string) {
     if (incident.state === "DISPATCHED" || incident.state === "ACKED") return incident;
+
+    // For HELP voice distress alerts, automatically include the emergency Hospital_NUMBER configured in .env
+    const rawHospitalNumber = this.deps.hospitalNumber || process.env.Hospital_NUMBER || process.env.HOSPITAL_NUMBER;
+    if (incident.kind === "VOICE_HELP" && rawHospitalNumber) {
+      const hosp = normalizePhone(rawHospitalNumber);
+      if (hosp && isValidE164(hosp) && !incident.contacts.includes(hosp)) {
+        incident.contacts.unshift(hosp);
+      }
+    }
+
+    // Attach Gemini medical condition analysis and nearby recommended hospitals if not yet present
+    if (!incident.aiMedicalAnalysis || !incident.recommendedHospitals) {
+      try {
+        const medResult = await analyzeMedicalConditionAndRecommendHospitals({
+          patient: incident.patient,
+          reason: incident.reason,
+          sensorSummary: incident.sensorSummary,
+          location: incident.location,
+        });
+        if (!incident.aiMedicalAnalysis) incident.aiMedicalAnalysis = medResult.analysis;
+        if (!incident.recommendedHospitals) incident.recommendedHospitals = medResult.recommendedHospitals;
+        await this.deps.store.save(incident);
+      } catch (e: any) {
+        console.warn("[IncidentEngine] Pre-dispatch medical analysis failed:", e?.message);
+      }
+    }
+
     if (incident.contacts.length === 0) {
       throw Object.assign(new Error("NO_CONTACTS"), { status: 400 });
     }
@@ -362,16 +393,32 @@ export function buildSmsBody(incident: Incident, reportUrl: string) {
   const kind = incident.kind === "CRASH" ? "possible road crash detected"
     : incident.kind === "SAFETY_WORD" ? "silent distress signal"
     : incident.kind === "MEDICAL" ? "medical emergency"
+    : incident.kind === "VOICE_HELP" ? "urgent HELP distress signal"
     : "emergency";
   const conf = incident.confidence ? ` (${incident.confidence.toLowerCase()} confidence)` : "";
   const loc = incident.address ? `${incident.address}\n${mapsLink(incident.location)}` : mapsLink(incident.location);
-  const med = [incident.patient.bloodGroup && `Blood: ${incident.patient.bloodGroup}`, incident.patient.allergies && `Allergies: ${incident.patient.allergies}`].filter(Boolean).join(" | ");
+  const med = [
+    incident.patient.bloodGroup && `Blood: ${incident.patient.bloodGroup}`,
+    incident.patient.allergies && `Allergies: ${incident.patient.allergies}`,
+    incident.patient.conditions && `Conditions: ${incident.patient.conditions}`,
+  ].filter(Boolean).join(" | ");
+
+  const aiCondition = incident.aiMedicalAnalysis
+    ? `Assessment: ${incident.aiMedicalAnalysis.condition} [${incident.aiMedicalAnalysis.severity}]`
+    : undefined;
+
+  const nearestHosp = incident.recommendedHospitals && incident.recommendedHospitals.length > 0
+    ? `Recommended Hospital: ${incident.recommendedHospitals[0].name} (${incident.recommendedHospitals[0].distanceKm} km)`
+    : undefined;
+
   return [
-    `ROADSOS ALERT: ${who} — ${kind}${conf}.`,
+    `ROADSOS DISTRESS ALERT: ${who} — ${kind}${conf}.`,
+    aiCondition,
     `Location: ${loc}`,
     med,
-    `Medical card: ${reportUrl}`,
-    `Reply 1 or press 1 on the call to confirm you are responding. Emergency: 112`,
+    nearestHosp,
+    `Medical Handover Report: ${reportUrl}`,
+    `Reply 1 or press 1 on the call to confirm ambulance dispatch. Emergency: 112`,
   ].filter(Boolean).join("\n");
 }
 
@@ -379,9 +426,13 @@ export function buildCallScript(incident: Incident) {
   const who = incident.patient.name?.trim() || "a Road S O S user";
   const what = incident.kind === "CRASH" ? "may have been in a road accident and is not responding"
     : incident.kind === "SAFETY_WORD" ? "has sent a silent distress signal"
+    : incident.kind === "VOICE_HELP" ? "has triggered emergency HELP distress"
     : "needs urgent help";
-  const where = incident.address ? ` Location: ${incident.address}.` : (incident.location ? ` Location has been sent to you by S M S.` : "");
-  return `Emergency alert from Road S O S. ${who} ${what}.${where} Press 1 to confirm you are responding.`;
+  const conditionStr = incident.aiMedicalAnalysis?.condition
+    ? ` Preliminary condition: ${incident.aiMedicalAnalysis.condition}.`
+    : "";
+  const where = incident.address ? ` Location: ${incident.address}.` : (incident.location ? ` Location and full medical report have been sent by S M S.` : "");
+  return `Emergency alert from Road S O S. ${who} ${what}.${conditionStr}${where} Press 1 to confirm ambulance dispatch.`;
 }
 
 export function publicView(i: Incident) {
@@ -431,6 +482,40 @@ export async function renderIncidentPdf(incident: Incident): Promise<Buffer> {
     doc.y = Math.max(y, 300);
     doc.moveDown();
 
+    if (incident.aiMedicalAnalysis) {
+      doc.fontSize(13).fillColor("#b91c1c").text("AI Clinical & Disease Analysis (Gemini)", { underline: true });
+      doc.fontSize(10).fillColor("#000");
+      doc.text(`Primary Condition: ${incident.aiMedicalAnalysis.condition}  [Severity: ${incident.aiMedicalAnalysis.severity}]`);
+      if (incident.aiMedicalAnalysis.possibleDiseasesOrInjuries?.length) {
+        doc.text(`Potential Diseases/Injuries: ${incident.aiMedicalAnalysis.possibleDiseasesOrInjuries.join(", ")}`);
+      }
+      if (incident.aiMedicalAnalysis.specialtiesNeeded?.length) {
+        doc.text(`Recommended Facilities: ${incident.aiMedicalAnalysis.specialtiesNeeded.join(", ")}`);
+      }
+      if (incident.aiMedicalAnalysis.triageSummary) {
+        doc.text(`Triage Summary: ${incident.aiMedicalAnalysis.triageSummary}`);
+      }
+      if (incident.aiMedicalAnalysis.firstAidInstructions?.length) {
+        doc.moveDown(0.2).fontSize(9).fillColor("#1d4ed8").text("Immediate First Aid Protocols:");
+        doc.fontSize(9).fillColor("#333");
+        incident.aiMedicalAnalysis.firstAidInstructions.forEach((step) => {
+          doc.text(`  • ${step}`);
+        });
+      }
+      doc.moveDown(0.5).fillColor("#000");
+    }
+
+    if (incident.recommendedHospitals && incident.recommendedHospitals.length > 0) {
+      doc.fontSize(13).fillColor("#1e40af").text("Recommended Nearby Hospitals (Google Maps)", { underline: true });
+      doc.fontSize(10).fillColor("#000");
+      incident.recommendedHospitals.slice(0, 3).forEach((h, idx) => {
+        doc.text(`${idx + 1}. ${h.name} — ${h.distanceKm} km away — Phone: ${h.phone || "Emergency Line"}`);
+        if (h.recommendationReason) doc.fontSize(8).fillColor("#555").text(`    Reason: ${h.recommendationReason}`).fillColor("#000").fontSize(10);
+        if (h.address) doc.fontSize(8).fillColor("#777").text(`    Address: ${h.address}`).fillColor("#000").fontSize(10);
+      });
+      doc.moveDown(0.5);
+    }
+
     doc.fontSize(14).text("Notification log");
     doc.fontSize(10);
     for (const h of incident.history) doc.text(`${new Date(h.at).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}  ${h.state}${h.note ? ` — ${h.note}` : ""}`);
@@ -456,6 +541,8 @@ const createSchema = z.object({
     conditions: z.string().max(200).optional(),
   }),
   contacts: z.array(z.string().min(7).max(20)).max(10),
+  aiMedicalAnalysis: z.any().optional(),
+  recommendedHospitals: z.any().optional(),
 });
 
 export function createIncidentRouter(engine: IncidentEngine, store: IncidentStore, io?: SocketServer) {
@@ -501,6 +588,8 @@ export function createIncidentRouter(engine: IncidentEngine, store: IncidentStor
           conditions: body.patient.conditions ? xss(body.patient.conditions) : undefined,
         },
         contacts,
+        aiMedicalAnalysis: body.aiMedicalAnalysis,
+        recommendedHospitals: body.recommendedHospitals,
       }, req.header("idempotency-key") || undefined);
       res.status(201).json({ incident: publicView(incident), warnings: contacts.length === 0 ? ["NO_VALID_CONTACTS"] : [] });
     } catch (e: any) {
