@@ -665,6 +665,20 @@ app.get("/api/config/police", (req, res) => {
   res.json({ isConfigured: !!num });
 });
 
+app.get("/api/health", (req, res) => {
+  const expectedToken = process.env.HEALTH_PING_TOKEN;
+  const providedToken = req.get("authorization")?.replace(/^Bearer\s+/i, "");
+  if (expectedToken && providedToken !== expectedToken) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  res.json({
+    status: "ok",
+    twilio: process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER ? "ok" : "not_configured",
+    gemini: process.env.GEMINI_API_KEY ? "ok" : "not_configured",
+  });
+});
+
 
 
 app.post("/api/medical/analyze-and-recommend", async (req, res) => {

@@ -81,8 +81,9 @@ export const TrafficUpdatesUI: React.FC<{
                             </button>
                           )}
                         </div>
-                      )}
+                      ))}
 
+                    </div>
                   </div>
                 )}
 

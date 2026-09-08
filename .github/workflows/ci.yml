@@ -38,13 +38,21 @@ jobs:
         run: npm run build
 
   canary_check:
-    # Only run the canary step on schedule or post-deploy (for our setup, let's just make it a scheduled job)
+    # Configure HEALTH_URL and HEALTH_PING_TOKEN as repository secrets to enable this check.
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - name: Ping Health Endpoint
+        env:
+          HEALTH_URL: ${{ secrets.HEALTH_URL }}
+          HEALTH_PING_TOKEN: ${{ secrets.HEALTH_PING_TOKEN }}
         run: |
-          RESPONSE=$(curl -s https://your-production-url.com/api/health -H "Authorization: Bearer ${{ secrets.HEALTH_PING_TOKEN }}")
+          if [ -z "$HEALTH_URL" ] || [ -z "$HEALTH_PING_TOKEN" ]; then
+            echo "Canary skipped: configure HEALTH_URL and HEALTH_PING_TOKEN repository secrets."
+            exit 0
+          fi
+
+          RESPONSE=$(curl --fail-with-body -sS "$HEALTH_URL/api/health" -H "Authorization: Bearer $HEALTH_PING_TOKEN")
           TWILIO=$(echo $RESPONSE | jq -r '.twilio')
           GEMINI=$(echo $RESPONSE | jq -r '.gemini')
           if [ "$TWILIO" != "ok" ] || [ "$GEMINI" != "ok" ]; then
