@@ -53,9 +53,9 @@ jobs:
           fi
 
           RESPONSE=$(curl --fail-with-body -sS "$HEALTH_URL/api/health" -H "Authorization: Bearer $HEALTH_PING_TOKEN")
-          TWILIO=$(echo $RESPONSE | jq -r '.twilio')
-          GEMINI=$(echo $RESPONSE | jq -r '.gemini')
-          if [ "$TWILIO" != "ok" ] || [ "$GEMINI" != "ok" ]; then
+          TWILIO=$(echo "$RESPONSE" | jq -r '.twilio')
+          GEMINI=$(echo "$RESPONSE" | jq -r '.gemini')
+          if [ "$TWILIO" != "true" ] || [ "$GEMINI" != "true" ]; then
             echo "Dependency is down! Response: $RESPONSE"
             exit 1
           fi
