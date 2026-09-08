@@ -26,8 +26,8 @@ function stream(segments: { ms: number; g: number | ((i: number) => number); noi
   return out;
 }
 
-function run(motion: MotionSample[], speeds: { t: number; speedMps: number }[]): CrashVerdict | null {
-  const det = new CrashDetector();
+function run(motion: MotionSample[], speeds: { t: number; speedMps: number }[], vehicleClass: 'TWO_WHEELER' | 'CAR' | 'TRUCK' = 'CAR'): CrashVerdict | null {
+  const det = new CrashDetector(vehicleClass);
   let verdict: CrashVerdict | null = null;
   det.onVerdict(v => { verdict = v; });
   let si = 0;
@@ -42,6 +42,20 @@ function run(motion: MotionSample[], speeds: { t: number; speedMps: number }[]):
 const t0 = 100_000;
 const speedTrace = (before: number, after: number, impactAt: number) =>
   Array.from({ length: 40 }, (_, i) => ({ t: t0 + i * 1000, speedMps: t0 + i * 1000 < impactAt ? before : after }));
+
+const speedTraceAround = (before: number, after: number, impactAt: number) =>
+  Array.from({ length: 12 }, (_, i) => ({ t: impactAt - 5000 + i * 1000, speedMps: impactAt - 5000 + i * 1000 < impactAt ? before : after }));
+
+function eventTrace(impactG: number, impactMs: number, gyro = 2, postTiltDeg = 0): MotionSample[] {
+  const pre = stream([{ ms: 2000, g: 1 }]);
+  const impact = stream([{ ms: impactMs, g: impactG, gyro }], t0 + 2000);
+  const post = stream([{ ms: 3500, g: 1 }], t0 + 2000 + impact.length * 20)
+    .map(sample => {
+      const angle = postTiltDeg * Math.PI / 180;
+      return { ...sample, ax: G * Math.sin(angle), az: G * Math.cos(angle) };
+    });
+  return [...pre, ...impact, ...post];
+}
 
 describe('CrashDetector', () => {
   it('provides the configured profile for each vehicle class', () => {
@@ -73,6 +87,62 @@ describe('CrashDetector', () => {
 
     expect(twoWheelerVerdicts).toBe(1);
     expect(carVerdicts).toBe(0);
+  });
+
+  it('rejects a car 3.2G spike lasting only 20 ms', () => {
+    const impactAt = t0 + 2000;
+    const verdict = run(eventTrace(3.2, 20), speedTraceAround(20, 0, impactAt));
+    expect(verdict).not.toBeNull();
+    expect(verdict!.features.impactDurationMs).toBe(0);
+    expect(verdict!.features.impactDurationConfirmed).toBe(false);
+    expect(verdict!.confidence).toBe('NONE');
+  });
+
+  it('confirms a car impact with duration, speed drop, and gyro evidence', () => {
+    const impactAt = t0 + 2000;
+    const verdict = run(eventTrace(3.2, 120), speedTraceAround(20, 0, impactAt));
+    expect(verdict).not.toBeNull();
+    expect(verdict!.features.impactDurationMs).toBeGreaterThanOrEqual(100);
+    expect(verdict!.features.impactDurationConfirmed).toBe(true);
+    expect(verdict!.features.speedConfirmation).toBe('CONFIRMED');
+    expect(verdict!.features.gyroConfirmation).toBe('CONFIRMED');
+    expect(verdict!.features.secondaryConfirmation).toBe('CONFIRMED');
+    expect(verdict!.confidence).not.toBe('NONE');
+  });
+
+  it('rejects a truck 5.5G impact shorter than 120 ms', () => {
+    const impactAt = t0 + 2000;
+    const verdict = run(eventTrace(5.5, 100), speedTraceAround(25, 0, impactAt), 'TRUCK');
+    expect(verdict).not.toBeNull();
+    expect(verdict!.features.impactDurationMs).toBeLessThan(120);
+    expect(verdict!.features.impactDurationConfirmed).toBe(false);
+    expect(verdict!.confidence).toBe('NONE');
+  });
+
+  it('confirms a two-wheeler impact with gyro and orientation evidence', () => {
+    const impactAt = t0 + 2000;
+    const verdict = run(eventTrace(2.0, 100, 2, 60), speedTraceAround(12, 0, impactAt), 'TWO_WHEELER');
+    expect(verdict).not.toBeNull();
+    expect(verdict!.features.impactDurationConfirmed).toBe(true);
+    expect(verdict!.features.gyroConfirmation).toBe('CONFIRMED');
+    expect(verdict!.features.orientationConfirmation).toBe('CONFIRMED');
+    expect(verdict!.features.speedConfirmation).toBe('UNKNOWN');
+    expect(verdict!.features.secondaryConfirmation).toBe('CONFIRMED');
+  });
+
+  it('does not reject a car with unavailable GPS when gyro evidence is present', () => {
+    const verdict = run(eventTrace(3.5, 120, 2), []);
+    expect(verdict).not.toBeNull();
+    expect(verdict!.features.speedBefore).toBe(-1);
+    expect(verdict!.features.speedAfter).toBe(-1);
+    expect(verdict!.features.speedConfirmation).toBe('UNKNOWN');
+    expect(verdict!.features.secondaryConfirmation).toBe('CONFIRMED');
+    expect(verdict!.confidence).not.toBe('NONE');
+  });
+
+  it('does not create a candidate during normal motion', () => {
+    const motion = stream([{ ms: 5000, g: 1.0, noise: 0.2 }]);
+    expect(run(motion, speedTrace(12, 12, t0 + 2500))).toBeNull();
   });
 
   it('flags a vehicle crash (60 km/h → 0, 7 g spike, rotation, stillness) as HIGH', () => {

@@ -30,7 +30,8 @@ export interface SpeedSample { t: number; speedMps: number; accuracyM?: number }
 
 export interface CrashFeatures {
   peakG: number;               // max |a|/g in impact window
-  impactDurationMs: number;    // time |a| stayed above 2 g around the peak
+  impactDurationMs: number;    // longest contiguous time |a| stayed above the vehicle threshold
+  impactDurationConfirmed: boolean;
   jerkMax: number;             // max d|a|/dt (g/s)
   preFreeFallMs: number;       // ms of |a| < 0.35 g in the 600 ms before impact (phone-drop signature)
   postStillness: number;       // 0..1, fraction of post-window samples within ±0.08 g of 1 g
@@ -40,7 +41,13 @@ export interface CrashFeatures {
   speedAfter: number;          // m/s median in [+1 s, +settle]; -1 when unknown
   speedDrop: number;           // m/s, max(0, before - after)
   drivingContext: 'DRIVING' | 'STATIONARY' | 'UNKNOWN';
+  gyroConfirmation: SensorEvidence;
+  orientationConfirmation: SensorEvidence;
+  speedConfirmation: SensorEvidence;
+  secondaryConfirmation: 'CONFIRMED' | 'NOT_CONFIRMED';
 }
+
+export type SensorEvidence = 'CONFIRMED' | 'NOT_CONFIRMED' | 'UNKNOWN';
 
 export type CrashConfidence = 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH';
 
@@ -67,6 +74,7 @@ export interface CrashDetectorOptions {
 }
 
 const G = 9.81;
+const GYRO_CONFIRMATION_RAD_S = 1;
 const mag = (s: MotionSample) => Math.sqrt(s.ax * s.ax + s.ay * s.ay + s.az * s.az) / G;
 const median = (xs: number[]) => { if (!xs.length) return -1; const a = [...xs].sort((p, q) => p - q); return a[Math.floor(a.length / 2)]; };
 const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
@@ -221,8 +229,21 @@ export class CrashDetector {
       if (dt > 0) jerkMax = Math.max(jerkMax, Math.abs(mag(impact[i]) - mag(impact[i - 1])) / dt);
     }
 
-    const above2 = impact.filter(m => mag(m) >= 2);
-    const impactDurationMs = above2.length ? above2[above2.length - 1].t - above2[0].t + 10 : 0;
+    let impactDurationMs = 0;
+    let runStart: number | null = null;
+    let previousAboveT: number | null = null;
+    for (const sample of impact) {
+      if (mag(sample) >= this.opts.candidateG) {
+        if (runStart === null) runStart = sample.t;
+        previousAboveT = sample.t;
+      } else if (runStart !== null) {
+        impactDurationMs = Math.max(impactDurationMs, previousAboveT! - runStart);
+        runStart = null;
+        previousAboveT = null;
+      }
+    }
+    if (runStart !== null) impactDurationMs = Math.max(impactDurationMs, previousAboveT! - runStart);
+    const impactDurationConfirmed = impactDurationMs >= this.profile.minImpactDurationMs;
 
     let preFreeFallMs = 0, run = 0;
     for (let i = 1; i < preFall.length; i++) {
@@ -252,13 +273,34 @@ export class CrashDetector {
     let drivingContext: CrashFeatures['drivingContext'] = 'UNKNOWN';
     if (recent.length >= 3) drivingContext = recent.some(s => s.speedMps >= this.opts.drivingSpeedMps) ? 'DRIVING' : 'STATIONARY';
 
+    const gyroConfirmation: SensorEvidence = gyroPeak >= GYRO_CONFIRMATION_RAD_S ? 'CONFIRMED' : 'NOT_CONFIRMED';
+    const orientationAngleDeg = Math.acos(Math.max(-1, Math.min(1, 1 - 2 * orientationChange))) * 180 / Math.PI;
+    const orientationConfirmation: SensorEvidence = this.profile.requireOrientationConfirmation
+      ? orientationAngleDeg >= (this.profile.orientationChangeDeg ?? 0) ? 'CONFIRMED' : 'NOT_CONFIRMED'
+      : 'UNKNOWN';
+    const speedKnown = speedBefore >= 0 && speedAfter >= 0;
+    const speedConfirmation: SensorEvidence = !this.profile.requireSpeedConfirmation
+      ? 'UNKNOWN'
+      : !speedKnown
+        ? 'UNKNOWN'
+        : speedDrop * 3.6 >= (this.profile.minSpeedDropKmh ?? 0) ? 'CONFIRMED' : 'NOT_CONFIRMED';
+    const secondaryConfirmation = this.profile.requireGyroConfirmation && gyroConfirmation !== 'CONFIRMED'
+      ? 'NOT_CONFIRMED'
+      : this.profile.requireOrientationConfirmation && orientationConfirmation !== 'CONFIRMED'
+        ? 'NOT_CONFIRMED'
+        : this.profile.requireSpeedConfirmation && speedConfirmation === 'NOT_CONFIRMED'
+          ? 'NOT_CONFIRMED'
+          : 'CONFIRMED';
+
     void peakT;
-    return { peakG, impactDurationMs, jerkMax, preFreeFallMs, postStillness, gyroPeak, orientationChange, speedBefore, speedAfter, speedDrop, drivingContext };
+    return { peakG, impactDurationMs, impactDurationConfirmed, jerkMax, preFreeFallMs, postStillness, gyroPeak, orientationChange, speedBefore, speedAfter, speedDrop, drivingContext, gyroConfirmation, orientationConfirmation, speedConfirmation, secondaryConfirmation };
   }
 
   private evaluate(t0: number) {
     const features = this.extractFeatures(t0);
-    const score = this.opts.model.score(features);
+    const score = features.impactDurationConfirmed && features.secondaryConfirmation === 'CONFIRMED'
+      ? this.opts.model.score(features)
+      : 0;
     const { low, medium, high } = this.opts.thresholds;
     const confidence: CrashConfidence = score >= high ? 'HIGH' : score >= medium ? 'MEDIUM' : score >= low ? 'LOW' : 'NONE';
     const verdict: CrashVerdict = {
@@ -281,6 +323,7 @@ export function summarizeVerdict(v: CrashVerdict): Record<string, number | strin
     confidence: v.confidence,
     peakG: Number(f.peakG.toFixed(2)),
     impactDurationMs: Math.round(f.impactDurationMs),
+    impactDurationConfirmed: f.impactDurationConfirmed,
     jerkMaxGps: Number(f.jerkMax.toFixed(1)),
     preFreeFallMs: Math.round(f.preFreeFallMs),
     postStillness: Number(f.postStillness.toFixed(2)),
@@ -289,5 +332,6 @@ export function summarizeVerdict(v: CrashVerdict): Record<string, number | strin
     speedBeforeKmh: f.speedBefore >= 0 ? Math.round(f.speedBefore * 3.6) : 'n/a',
     speedAfterKmh: f.speedAfter >= 0 ? Math.round(f.speedAfter * 3.6) : 'n/a',
     drivingContext: f.drivingContext,
+    secondaryConfirmation: f.secondaryConfirmation,
   };
 }
