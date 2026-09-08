@@ -31,7 +31,7 @@ import { EmergencySOSModal } from './components/EmergencySOSModal';
 import { GForceScatterPlot } from './components/GForceScatterPlot';
 import { raiseIncident, observeIncident, observeDrivingMode, cancelIncident, closeIncident, contactsFromProfile, flushPendingIncidents, openScheme, getDeviceToken, type Incident, type IncidentKind, type DispatchOutcome, type AiMedicalAnalysis, type RecommendedHospital } from './services/incidentService';
 import { CrashDetector, summarizeVerdict, type CrashVerdict } from './safety/crashDetector';
-import { getStoredVehicleClass } from './safety/vehicleProfiles';
+import { getStoredVehicleClass, setStoredVehicleClass, type VehicleClass } from './safety/vehicleProfiles';
 import { SafetyWordMatcher, PorcupineWakeWordEngine, loadSafetyWord, saveSafetyWord, validateSafetyWord, type StoredSafetyWord } from './safety/wakeWord';
 import { backgroundService } from './services/backgroundService';
 
@@ -284,10 +284,17 @@ export default function App() {
   const incidentUnsubRef = useRef<null | (() => void)>(null);
 
   // ── Feature 1: crash detector + last verdict (for UI/PDF) ──
-  const crashDetectorRef = useRef<CrashDetector>(new CrashDetector(getStoredVehicleClass()));
+  const [selectedVehicleClass, setSelectedVehicleClass] = useState<VehicleClass>(() => getStoredVehicleClass());
+  const crashDetectorRef = useRef<CrashDetector>(new CrashDetector(selectedVehicleClass));
   const [lastVerdict, setLastVerdict] = useState<CrashVerdict | null>(null);
   const pendingVerdictRef = useRef<CrashVerdict | null>(null);
   const [backgroundMode, setBackgroundMode] = useState<string>('none');
+  const [showVehiclePicker, setShowVehiclePicker] = useState(false);
+
+  useEffect(() => {
+    setStoredVehicleClass(selectedVehicleClass);
+    crashDetectorRef.current = new CrashDetector(selectedVehicleClass);
+  }, [selectedVehicleClass]);
   const [showMedicalProfile, setShowMedicalProfile] = useState(false);
   const [quickContactLabel, setQuickContactLabel] = useState("");
   const [quickContactNumber, setQuickContactNumber] = useState("");
@@ -365,79 +372,94 @@ export default function App() {
     return unsub;
   }, []);
 
+  const activateDrivingModeForVehicle = async (vehicleClass: VehicleClass) => {
+    setSelectedVehicleClass(vehicleClass);
+    setShowVehiclePicker(false);
+    setIsDrivingMode(true);
+
+    const loc = userLocationRef.current;
+
+    let startAddress = loc ? `Lat: ${loc.lat.toFixed(4)}, Lng: ${loc.lng.toFixed(4)}` : 'Unknown Location';
+    if (loc) {
+      try {
+        startAddress = await geoapifyService.reverseGeocode(loc.lat, loc.lng);
+      } catch (e) {}
+    }
+    setCurrentTripStart({
+      time: Date.now(),
+      location: loc,
+      address: startAddress,
+    });
+
+    try {
+      await executeWithOfflineFallback('/api/status/driving', 'POST', {
+        active: true,
+        phone: userPhone,
+        name: medicalInfo.name,
+        vehicleClass,
+      });
+      speakNotification(`Driving Mode Engaged. ${vehicleClass.replace('_', ' ').toLowerCase()} profile active.`);
+    } catch (e) {
+      console.error('Failed to sync driving status:', e);
+    }
+  };
+
   const toggleDrivingMode = async () => {
-    const newState = !isDrivingModeRef.current;
+    if (!isDrivingModeRef.current) {
+      setShowVehiclePicker(true);
+      return;
+    }
+
+    const newState = false;
     setIsDrivingMode(newState);
     
     const loc = userLocationRef.current;
     
     // Trip Logging
-    if (newState) {
-       // Starting driving mode
-       let startAddress = loc ? `Lat: ${loc.lat.toFixed(4)}, Lng: ${loc.lng.toFixed(4)}` : 'Unknown Location';
-       if (loc) {
-         try {
-           startAddress = await geoapifyService.reverseGeocode(loc.lat, loc.lng);
-         } catch(e) {}
-       }
-       setCurrentTripStart({
-          time: Date.now(),
-          location: loc,
-          address: startAddress
-       });
-    } else {
-       // Stopping driving mode
-       let endAddress = loc ? `Lat: ${loc.lat.toFixed(4)}, Lng: ${loc.lng.toFixed(4)}` : 'Unknown Location';
-       if (loc) {
-         try {
-           endAddress = await geoapifyService.reverseGeocode(loc.lat, loc.lng);
-         } catch(e) {}
-       }
-       
-       const curTrip = currentTripStartRef.current;
-       if (curTrip) {
-          const durationMs = Date.now() - curTrip.time;
-          const mins = Math.floor(durationMs / 60000);
-          
-          let distanceStr = 'Tracking...';
-          if (curTrip.location && loc) {
-             // Approximation of distance in km using Haversine
-             const R = 6371; // Radius of the earth in km
-             const dLat = (loc.lat - curTrip.location.lat) * Math.PI / 180;
-             const dLon = (loc.lng - curTrip.location.lng) * Math.PI / 180;
-             const a = 
-               Math.sin(dLat/2) * Math.sin(dLat/2) +
-               Math.cos(curTrip.location.lat * Math.PI / 180) * Math.cos(loc.lat * Math.PI / 180) * 
-               Math.sin(dLon/2) * Math.sin(dLon/2);
-             const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
-             const d = R * c; // Distance in km
-             distanceStr = `${d.toFixed(1)} km`;
-          }
+    let endAddress = loc ? `Lat: ${loc.lat.toFixed(4)}, Lng: ${loc.lng.toFixed(4)}` : 'Unknown Location';
+    if (loc) {
+      try {
+        endAddress = await geoapifyService.reverseGeocode(loc.lat, loc.lng);
+      } catch(e) {}
+    }
+    
+    const curTrip = currentTripStartRef.current;
+    if (curTrip) {
+      const durationMs = Date.now() - curTrip.time;
+      const mins = Math.floor(durationMs / 60000);
+      
+      let distanceStr = 'Tracking...';
+      if (curTrip.location && loc) {
+        const R = 6371;
+        const dLat = (loc.lat - curTrip.location.lat) * Math.PI / 180;
+        const dLon = (loc.lng - curTrip.location.lng) * Math.PI / 180;
+        const a = 
+          Math.sin(dLat/2) * Math.sin(dLat/2) +
+          Math.cos(curTrip.location.lat * Math.PI / 180) * Math.cos(loc.lat * Math.PI / 180) * 
+          Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+        const d = R * c;
+        distanceStr = `${d.toFixed(1)} km`;
+      }
 
-          const newTrip = {
-             id: Date.now().toString(),
-             date: new Date().toLocaleDateString(),
-             type: 'safe',
-             start: curTrip.address,
-             end: endAddress,
-             duration: `${mins} min`,
-             distance: distanceStr
-          };
-          setTrips(prev => [newTrip, ...prev]);
-          setCurrentTripStart(null);
-       }
+      const newTrip = {
+        id: Date.now().toString(),
+        date: new Date().toLocaleDateString(),
+        type: 'safe',
+        start: curTrip.address,
+        end: endAddress,
+        duration: `${mins} min`,
+        distance: distanceStr,
+      };
+      setTrips(prev => [newTrip, ...prev]);
+      setCurrentTripStart(null);
     }
 
     try {
-      await executeWithOfflineFallback('/api/status/driving', 'POST', { active: newState, phone: userPhone, name: medicalInfo.name });
-      
-      if (newState) {
-         speakNotification("Driving Mode Engaged. Safe travels.");
-      } else {
-         speakNotification("Driving Mode Disabled.");
-      }
+      await executeWithOfflineFallback('/api/status/driving', 'POST', { active: false, phone: userPhone, name: medicalInfo.name, vehicleClass: selectedVehicleClass });
+      speakNotification('Driving Mode Disabled.');
     } catch (e) {
-      console.error("Failed to sync driving status:", e);
+      console.error('Failed to sync driving status:', e);
     }
   };
 
@@ -2192,6 +2214,74 @@ export default function App() {
                   <p className="text-[10px] text-slate-400 mt-3">{activeIncident.deliveries.filter(d => d.status === 'failed').map(d => d.error).filter(Boolean)[0]}</p>
                 )}
               </motion.section>
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {showVehiclePicker && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[80] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-6"
+              >
+                <motion.div
+                  initial={{ scale: 0.96, y: 12 }}
+                  animate={{ scale: 1, y: 0 }}
+                  exit={{ scale: 0.96, y: 12 }}
+                  className="w-full max-w-lg rounded-[2rem] border border-white/10 bg-slate-900 p-6 shadow-2xl"
+                >
+                  <div className="mb-5">
+                    <p className="text-[10px] font-black uppercase tracking-[0.4em] text-cyan-400">Vehicle Type</p>
+                    <h3 className="mt-2 text-2xl font-black tracking-tight text-white">Select the vehicle you are driving</h3>
+                  </div>
+
+                  <div className="grid gap-3">
+                    {(['TWO_WHEELER', 'CAR', 'TRUCK'] as VehicleClass[]).map((vehicle) => (
+                      <button
+                        key={vehicle}
+                        onClick={() => activateDrivingModeForVehicle(vehicle)}
+                        className={`rounded-2xl border px-4 py-4 text-left transition-all ${
+                          selectedVehicleClass === vehicle
+                            ? 'border-cyan-400 bg-cyan-500/10 text-white'
+                            : 'border-white/10 bg-slate-950/40 text-slate-200 hover:border-cyan-500/40 hover:bg-slate-800/60'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <p className="text-lg font-black uppercase tracking-tight">
+                              {vehicle === 'TWO_WHEELER' ? 'Two-Wheeler' : vehicle === 'CAR' ? 'Car' : 'Truck'}
+                            </p>
+                            <p className="text-xs text-slate-400">
+                              {vehicle === 'TWO_WHEELER'
+                                ? 'Bike / scooter profile'
+                                : vehicle === 'CAR'
+                                  ? 'Passenger car profile'
+                                  : 'Heavy vehicle profile'}
+                            </p>
+                          </div>
+                          {selectedVehicleClass === vehicle && <div className="h-3 w-3 rounded-full bg-cyan-400" />}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="mt-5 flex justify-between gap-3">
+                    <button
+                      onClick={() => setShowVehiclePicker(false)}
+                      className="flex-1 rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 text-xs font-black uppercase tracking-[0.25em] text-slate-300"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => activateDrivingModeForVehicle(selectedVehicleClass)}
+                      className="flex-1 rounded-2xl bg-cyan-500 px-4 py-3 text-xs font-black uppercase tracking-[0.25em] text-slate-950"
+                    >
+                      Start Drive
+                    </button>
+                  </div>
+                </motion.div>
+              </motion.div>
             )}
           </AnimatePresence>
 

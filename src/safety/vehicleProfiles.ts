@@ -56,6 +56,16 @@ export function getVehicleCrashProfile(vehicleClass: VehicleClass): VehicleCrash
   return VEHICLE_CRASH_PROFILES[vehicleClass];
 }
 
+export function setStoredVehicleClass(vehicleClass: VehicleClass): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(VEHICLE_CLASS_STORAGE_KEY, vehicleClass);
+    }
+  } catch {
+    // Storage is optional; ignore write failures.
+  }
+}
+
 export function getStoredVehicleClass(): VehicleClass {
   try {
     const stored = typeof localStorage !== 'undefined'
