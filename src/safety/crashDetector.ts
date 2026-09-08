@@ -49,6 +49,22 @@ export interface CrashFeatures {
 
 export type SensorEvidence = 'CONFIRMED' | 'NOT_CONFIRMED' | 'UNKNOWN';
 
+export type CrashSeverity = 'LOW' | 'MEDIUM' | 'HIGH';
+export type CrashAnomaly = 'NONE' | 'POTHOLE' | 'SPEED_BUMP' | 'HARD_BRAKING' | 'HARD_CORNERING' | 'PHONE_DROP' | 'CONTINUED_DRIVING';
+
+export interface CrashAssessment {
+  severity: CrashSeverity;
+  confidence: CrashConfidence;
+  anomaly: CrashAnomaly;
+  anomalyReason: string | null;
+  peakG: number;
+  impactDurationMs: number;
+  secondaryConfirmation: 'CONFIRMED' | 'NOT_CONFIRMED';
+  speedDrop: number;
+  gyroEvidence: SensorEvidence;
+  orientationEvidence: SensorEvidence;
+}
+
 export type CrashConfidence = 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH';
 
 export interface CrashVerdict {
@@ -56,6 +72,7 @@ export interface CrashVerdict {
   score: number;               // 0..1
   confidence: CrashConfidence;
   features: CrashFeatures;
+  assessment: CrashAssessment;
   /** Suggested seconds to wait for "I'm okay" before escalating. */
   probeTimeoutS: number;
 }
@@ -298,21 +315,71 @@ export class CrashDetector {
 
   private evaluate(t0: number) {
     const features = this.extractFeatures(t0);
-    const score = features.impactDurationConfirmed && features.secondaryConfirmation === 'CONFIRMED'
+    const anomaly = classifyAnomaly(features, this.profile);
+    const score = features.impactDurationConfirmed && features.secondaryConfirmation === 'CONFIRMED' && anomaly.kind === 'NONE'
       ? this.opts.model.score(features)
       : 0;
     const { low, medium, high } = this.opts.thresholds;
     const confidence: CrashConfidence = score >= high ? 'HIGH' : score >= medium ? 'MEDIUM' : score >= low ? 'LOW' : 'NONE';
+    const severity: CrashSeverity = features.peakG >= this.profile.confirmedG * 1.5
+      ? 'HIGH'
+      : features.peakG >= this.profile.confirmedG
+        ? 'MEDIUM'
+        : 'LOW';
+    const assessment: CrashAssessment = {
+      severity,
+      confidence,
+      anomaly: anomaly.kind,
+      anomalyReason: anomaly.reason,
+      peakG: features.peakG,
+      impactDurationMs: features.impactDurationMs,
+      secondaryConfirmation: features.secondaryConfirmation,
+      speedDrop: features.speedDrop,
+      gyroEvidence: features.gyroConfirmation,
+      orientationEvidence: features.orientationConfirmation,
+    };
     const verdict: CrashVerdict = {
       at: t0,
       score,
       confidence,
       features,
+      assessment,
       probeTimeoutS: confidence === 'HIGH' ? 10 : confidence === 'MEDIUM' ? 20 : 30,
     };
     this.lastVerdictAt = t0;
     for (const l of this.listeners) l(verdict);
   }
+}
+
+function classifyAnomaly(features: CrashFeatures, profile: VehicleCrashProfile): { kind: CrashAnomaly; reason: string | null } {
+  if (features.preFreeFallMs >= 200 && features.drivingContext !== 'DRIVING') {
+    return { kind: 'PHONE_DROP', reason: 'Free-fall preceded the impact while vehicle motion was not confirmed.' };
+  }
+
+  const speedContinued = features.speedBefore >= 0 && features.speedAfter >= 0 && features.speedAfter >= features.speedBefore * 0.8;
+  const speedDropped = features.speedBefore >= 0 && features.speedAfter >= 0 && features.speedDrop * 3.6 >= 5;
+  const belowConfirmed = features.peakG < profile.confirmedG;
+  const lowPostMotion = features.postStillness < 0.9;
+
+  if (features.drivingContext === 'DRIVING' && belowConfirmed && speedDropped && features.gyroConfirmation !== 'CONFIRMED' && features.orientationChange < 0.35) {
+    return { kind: 'HARD_BRAKING', reason: 'Speed dropped without crash-level impact, rotation, or orientation change.' };
+  }
+
+  if (features.drivingContext === 'DRIVING' && speedContinued && belowConfirmed && lowPostMotion) {
+    if (features.orientationChange > 0.35 && features.gyroPeak >= GYRO_CONFIRMATION_RAD_S) {
+      return { kind: 'HARD_CORNERING', reason: 'Rotation and orientation changed while speed continued.' };
+    }
+    if (speedDropped) {
+      return { kind: 'HARD_BRAKING', reason: 'Speed dropped without crash-level impact or post-impact stillness.' };
+    }
+    return { kind: features.impactDurationMs >= profile.minImpactDurationMs ? 'SPEED_BUMP' : 'POTHOLE', reason: 'Impact-level acceleration was followed by continued driving.' };
+  }
+
+  if (features.drivingContext === 'DRIVING' && speedContinued && belowConfirmed) {
+    return { kind: 'CONTINUED_DRIVING', reason: 'Vehicle speed continued after the acceleration event.' };
+  }
+
+  return { kind: 'NONE', reason: null };
 }
 
 /** Compact, human-readable summary for the incident record / PDF. */
@@ -333,5 +400,8 @@ export function summarizeVerdict(v: CrashVerdict): Record<string, number | strin
     speedAfterKmh: f.speedAfter >= 0 ? Math.round(f.speedAfter * 3.6) : 'n/a',
     drivingContext: f.drivingContext,
     secondaryConfirmation: f.secondaryConfirmation,
+    severity: v.assessment.severity,
+    anomaly: v.assessment.anomaly,
+    anomalyReason: v.assessment.anomalyReason || 'none',
   };
 }

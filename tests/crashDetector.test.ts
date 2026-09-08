@@ -46,13 +46,13 @@ const speedTrace = (before: number, after: number, impactAt: number) =>
 const speedTraceAround = (before: number, after: number, impactAt: number) =>
   Array.from({ length: 12 }, (_, i) => ({ t: impactAt - 5000 + i * 1000, speedMps: impactAt - 5000 + i * 1000 < impactAt ? before : after }));
 
-function eventTrace(impactG: number, impactMs: number, gyro = 2, postTiltDeg = 0): MotionSample[] {
+function eventTrace(impactG: number, impactMs: number, gyro = 2, postTiltDeg = 0, postNoise = 0, postG = 1): MotionSample[] {
   const pre = stream([{ ms: 2000, g: 1 }]);
   const impact = stream([{ ms: impactMs, g: impactG, gyro }], t0 + 2000);
-  const post = stream([{ ms: 3500, g: 1 }], t0 + 2000 + impact.length * 20)
+  const post = stream([{ ms: 3500, g: postG, noise: postNoise }], t0 + 2000 + impact.length * 20)
     .map(sample => {
       const angle = postTiltDeg * Math.PI / 180;
-      return { ...sample, ax: G * Math.sin(angle), az: G * Math.cos(angle) };
+      return { ...sample, ax: postG * G * Math.sin(angle), az: postG * G * Math.cos(angle) };
     });
   return [...pre, ...impact, ...post];
 }
@@ -145,6 +145,54 @@ describe('CrashDetector', () => {
     expect(run(motion, speedTrace(12, 12, t0 + 2500))).toBeNull();
   });
 
+  it('classifies potholes and speed bumps before final confidence', () => {
+    const impactAt = t0 + 2000;
+    const pothole = run(eventTrace(3.5, 60, 0, 0, 0, 1.5), speedTraceAround(12, 11, impactAt));
+    const speedBump = run(eventTrace(3.5, 120, 0, 0, 0, 1.5), speedTraceAround(12, 12, impactAt));
+    expect(pothole!.assessment.anomaly).toBe('POTHOLE');
+    expect(speedBump!.assessment.anomaly).toBe('SPEED_BUMP');
+    expect(pothole!.confidence).toBe('NONE');
+    expect(speedBump!.confidence).toBe('NONE');
+  });
+
+  it('classifies hard braking and hard cornering without treating them as crashes', () => {
+    const impactAt = t0 + 2000;
+    const braking = run(eventTrace(3.5, 120, 0), speedTraceAround(20, 10, impactAt));
+    const cornering = run(eventTrace(3.5, 120, 2, 80, 0, 1.5), speedTraceAround(12, 12, impactAt));
+    expect(braking!.assessment.anomaly).toBe('HARD_BRAKING');
+    expect(cornering!.assessment.anomaly).toBe('HARD_CORNERING');
+    expect(braking!.confidence).toBe('NONE');
+    expect(cornering!.confidence).toBe('NONE');
+  });
+
+  it('classifies phone drops and continued driving after a spike', () => {
+    const impactAt = t0 + 5350;
+    const phoneDrop = run(stream([
+      { ms: 5000, g: 1 },
+      { ms: 350, g: 0.05 },
+      { ms: 120, g: 5 },
+      { ms: 3500, g: 1 },
+    ]), speedTraceAround(0, 0, impactAt));
+    const continued = run(eventTrace(3.5, 120, 0, 0, 0.01), speedTraceAround(12, 12, t0 + 2000));
+    expect(phoneDrop!.assessment.anomaly).toBe('PHONE_DROP');
+    expect(continued!.assessment.anomaly).toBe('CONTINUED_DRIVING');
+    expect(phoneDrop!.confidence).toBe('NONE');
+    expect(continued!.confidence).toBe('NONE');
+  });
+
+  it('preserves genuine crash assessments for all vehicle classes', () => {
+    const impactAt = t0 + 2000;
+    const twoWheeler = run(eventTrace(3.2, 100, 2, 60), speedTraceAround(12, 0, impactAt), 'TWO_WHEELER');
+    const car = run(eventTrace(7, 160, 4, 0), speedTraceAround(20, 0, impactAt), 'CAR');
+    const truck = run(eventTrace(8, 140, 4, 0), speedTraceAround(25, 0, impactAt), 'TRUCK');
+    expect(twoWheeler!.assessment.anomaly).toBe('NONE');
+    expect(car!.assessment.anomaly).toBe('NONE');
+    expect(truck!.assessment.anomaly).toBe('NONE');
+    expect(twoWheeler!.confidence).not.toBe('NONE');
+    expect(car!.confidence).not.toBe('NONE');
+    expect(truck!.confidence).not.toBe('NONE');
+  });
+
   it('flags a vehicle crash (60 km/h → 0, 7 g spike, rotation, stillness) as HIGH', () => {
     const motion = stream([
       { ms: 8000, g: 1.0, noise: 0.3 },                         // driving vibration
@@ -159,6 +207,9 @@ describe('CrashDetector', () => {
     expect(v!.features.drivingContext).toBe('DRIVING');
     expect(v!.features.speedDrop).toBeGreaterThan(10);
     expect(v!.probeTimeoutS).toBe(10);
+    expect(v!.assessment.severity).toBe('HIGH');
+    expect(v!.assessment.anomaly).toBe('NONE');
+    expect(v!.assessment.confidence).toBe(v!.confidence);
   });
 
   it('rejects a phone dropped on the floor while stationary (free-fall then 5 g)', () => {

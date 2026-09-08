@@ -1754,9 +1754,6 @@ export default function App() {
       motionWatchId = await hardwareService.watchMotion((sample) => {
         detector.pushMotion(sample);
         const g = Math.sqrt(sample.ax ** 2 + sample.ay ** 2 + sample.az ** 2) / 9.81;
-        if (g > 8.0) {
-          forceDrivingModeOff('crash_detected');
-        }
         const now = Date.now();
         if (now - lastStateUpdate > 250) {
           lastStateUpdate = now;
