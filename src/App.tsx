@@ -31,6 +31,7 @@ import { EmergencySOSModal } from './components/EmergencySOSModal';
 import { GForceScatterPlot } from './components/GForceScatterPlot';
 import { raiseIncident, observeIncident, observeDrivingMode, cancelIncident, closeIncident, contactsFromProfile, flushPendingIncidents, openScheme, getDeviceToken, type Incident, type IncidentKind, type DispatchOutcome, type AiMedicalAnalysis, type RecommendedHospital } from './services/incidentService';
 import { CrashDetector, summarizeVerdict, type CrashVerdict } from './safety/crashDetector';
+import { getStoredVehicleClass } from './safety/vehicleProfiles';
 import { SafetyWordMatcher, PorcupineWakeWordEngine, loadSafetyWord, saveSafetyWord, validateSafetyWord, type StoredSafetyWord } from './safety/wakeWord';
 import { backgroundService } from './services/backgroundService';
 
@@ -283,7 +284,7 @@ export default function App() {
   const incidentUnsubRef = useRef<null | (() => void)>(null);
 
   // ── Feature 1: crash detector + last verdict (for UI/PDF) ──
-  const crashDetectorRef = useRef<CrashDetector>(new CrashDetector());
+  const crashDetectorRef = useRef<CrashDetector>(new CrashDetector(getStoredVehicleClass()));
   const [lastVerdict, setLastVerdict] = useState<CrashVerdict | null>(null);
   const pendingVerdictRef = useRef<CrashVerdict | null>(null);
   const [backgroundMode, setBackgroundMode] = useState<string>('none');

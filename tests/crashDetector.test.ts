@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { CrashDetector, type CrashVerdict, type MotionSample } from '../src/safety/crashDetector';
+import { DEFAULT_VEHICLE_CLASS, VEHICLE_CRASH_PROFILES } from '../src/safety/vehicleProfiles';
 
 const G = 9.81;
 
@@ -43,6 +44,37 @@ const speedTrace = (before: number, after: number, impactAt: number) =>
   Array.from({ length: 40 }, (_, i) => ({ t: t0 + i * 1000, speedMps: t0 + i * 1000 < impactAt ? before : after }));
 
 describe('CrashDetector', () => {
+  it('provides the configured profile for each vehicle class', () => {
+    expect(new CrashDetector('TWO_WHEELER').profile).toEqual(VEHICLE_CRASH_PROFILES.TWO_WHEELER);
+    expect(new CrashDetector('CAR').profile).toEqual(VEHICLE_CRASH_PROFILES.CAR);
+    expect(new CrashDetector('TRUCK').profile).toEqual(VEHICLE_CRASH_PROFILES.TRUCK);
+  });
+
+  it('uses CAR as the default vehicle configuration', () => {
+    const detector = new CrashDetector();
+    expect(detector.vehicleClass).toBe(DEFAULT_VEHICLE_CLASS);
+    expect(detector.profile).toEqual(VEHICLE_CRASH_PROFILES.CAR);
+  });
+
+  it('uses the selected profile candidate threshold', () => {
+    const model = { score: () => 1 };
+    const twoWheeler = new CrashDetector({ ...VEHICLE_CRASH_PROFILES.TWO_WHEELER, model });
+    const car = new CrashDetector({ ...VEHICLE_CRASH_PROFILES.CAR, model });
+    let twoWheelerVerdicts = 0;
+    let carVerdicts = 0;
+    twoWheeler.onVerdict(() => { twoWheelerVerdicts++; });
+    car.onVerdict(() => { carVerdicts++; });
+    const sample = { t: t0, ax: Math.sqrt((2 * G) ** 2 - G ** 2), ay: 0, az: G };
+
+    twoWheeler.pushMotion(sample);
+    twoWheeler.flush();
+    car.pushMotion(sample);
+    car.flush();
+
+    expect(twoWheelerVerdicts).toBe(1);
+    expect(carVerdicts).toBe(0);
+  });
+
   it('flags a vehicle crash (60 km/h → 0, 7 g spike, rotation, stillness) as HIGH', () => {
     const motion = stream([
       { ms: 8000, g: 1.0, noise: 0.3 },                         // driving vibration

@@ -23,6 +23,8 @@
  *    accepted by the app.
  */
 
+import { DEFAULT_VEHICLE_CLASS, getVehicleCrashProfile, type VehicleClass, type VehicleCrashProfile } from './vehicleProfiles';
+
 export interface MotionSample { t: number; ax: number; ay: number; az: number; gx?: number; gy?: number; gz?: number }
 export interface SpeedSample { t: number; speedMps: number; accuracyM?: number }
 
@@ -54,9 +56,9 @@ export interface CrashVerdict {
 export interface CrashModel { score(f: CrashFeatures): number }
 
 export interface CrashDetectorOptions {
-  candidateG?: number;         // spike that opens a candidate (default 3.2 g)
-  settleMs?: number;           // wait after spike before scoring (default 2500)
-  cooldownMs?: number;         // ignore new candidates after a verdict (default 30 000)
+  candidateG?: number;         // spike that opens a candidate (vehicle-profile default)
+  settleMs?: number;           // wait after spike before scoring (vehicle-profile default)
+  cooldownMs?: number;         // ignore new candidates after a verdict (vehicle-profile default)
   bufferMs?: number;           // ring buffer length (default 20 000)
   drivingSpeedMps?: number;    // speed treated as "in a vehicle" (default 4 m/s ≈ 15 km/h)
   model?: CrashModel;
@@ -97,6 +99,8 @@ export function createCrashModel(predict: (f: CrashFeatures) => number): CrashMo
 }
 
 export class CrashDetector {
+  readonly vehicleClass: VehicleClass;
+  readonly profile: VehicleCrashProfile;
   private motion: MotionSample[] = [];
   private speed: SpeedSample[] = [];
   private candidateAt: number | null = null;
@@ -106,11 +110,21 @@ export class CrashDetector {
   private lastSampleT = -Infinity;
   private readonly opts: Required<Omit<CrashDetectorOptions, 'model' | 'now'>> & { model: CrashModel; now: () => number };
 
-  constructor(options: CrashDetectorOptions = {}) {
+  constructor(vehicleOrOptions: VehicleClass | VehicleCrashProfile | CrashDetectorOptions = DEFAULT_VEHICLE_CLASS) {
+    const isVehicleClass = vehicleOrOptions === 'TWO_WHEELER' || vehicleOrOptions === 'CAR' || vehicleOrOptions === 'TRUCK';
+    const isProfile = !isVehicleClass && 'candidateG' in vehicleOrOptions && 'postImpactStillnessMs' in vehicleOrOptions;
+    const profile = isVehicleClass
+      ? getVehicleCrashProfile(vehicleOrOptions)
+      : isProfile
+        ? vehicleOrOptions
+        : getVehicleCrashProfile(DEFAULT_VEHICLE_CLASS);
+    const options = isVehicleClass || isProfile ? {} : vehicleOrOptions;
+    this.vehicleClass = isVehicleClass ? vehicleOrOptions : DEFAULT_VEHICLE_CLASS;
+    this.profile = profile;
     this.opts = {
-      candidateG: options.candidateG ?? 3.2,
-      settleMs: options.settleMs ?? 2500,
-      cooldownMs: options.cooldownMs ?? 30_000,
+      candidateG: options.candidateG ?? profile.candidateG,
+      settleMs: options.settleMs ?? profile.postImpactStillnessMs,
+      cooldownMs: options.cooldownMs ?? profile.cooldownMs,
       bufferMs: options.bufferMs ?? 20_000,
       drivingSpeedMps: options.drivingSpeedMps ?? 4,
       model: options.model ?? new HeuristicCrashModel(),
