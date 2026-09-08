@@ -47,6 +47,14 @@ export interface RecommendedHospital {
   mapsUrl: string;
 }
 
+export interface IncidentLocationHistoryEntry {
+  lat: number;
+  lng: number;
+  accuracyM?: number;
+  speedMps?: number;
+  at: number;
+}
+
 export interface Incident {
   id: string;
   kind: IncidentKind;
@@ -55,6 +63,7 @@ export interface Incident {
   createdAt: number;
   updatedAt: number;
   location?: { lat: number; lng: number; accuracyM?: number };
+  locationHistory?: IncidentLocationHistoryEntry[];
   address?: string;
   confidence?: 'LOW' | 'MEDIUM' | 'HIGH';
   patient: { name: string; phone?: string; bloodGroup?: string; allergies?: string; conditions?: string };
@@ -156,6 +165,15 @@ export async function cancelIncident(id: string, note?: string) {
 
 export async function closeIncident(id: string) {
   const res = await fetch(`/api/incidents/${id}/close`, { method: 'POST', headers: headers() });
+  return safeJson(res);
+}
+
+export async function updateIncidentLocation(id: string, lat: number, lng: number, accuracyM?: number, speedMps?: number) {
+  const res = await fetch(`/api/incidents/${id}/location`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ lat, lng, accuracyM, speedMps }),
+  });
   return safeJson(res);
 }
 
@@ -336,7 +354,8 @@ export async function raiseIncident(input: CreateIncidentInput, opts: { idempote
     incident = out.incident;
     if (out.summary.allFailed && allowNative) {
       const used = openNativeFallback(input);
-      return { incident, summary: out.summary, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: 'ALL_CHANNELS_FAILED' };
+      const reason = incident.deliveries.find((d: any) => d.status === 'failed')?.error || 'ALL_CHANNELS_FAILED';
+      return { incident, summary: out.summary, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: reason };
     }
     return { incident, summary: out.summary, usedNativeFallback: false };
   } catch (e: any) {

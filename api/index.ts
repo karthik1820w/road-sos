@@ -13,6 +13,7 @@ import xss from "xss";
 import { IncidentEngine, MemoryIncidentStore, SupabaseMirroredStore, createIncidentRouter, normalizePhone } from "./incidents.js";
 import { createDrivingRouter, MemoryDrivingModeStore, SupabaseMirroredDrivingModeStore } from "./drivingMode.js";
 import { analyzeMedicalConditionAndRecommendHospitals } from "./medical.js";
+import { createTrafficRouter } from "./traffic.js";
 
 dotenv.config();
 
@@ -80,6 +81,8 @@ app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
     twilio: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER),
+    hospitalNumberConfigured: !!(process.env.HOSPITAL_NUMBER || process.env.Hospital_NUMBER),
+    policeNumberConfigured: !!process.env.POLICE_NUMBER,
     gemini: !!process.env.GEMINI_API_KEY,
     supabase: !!process.env.SUPABASE_URL,
     maps: !!process.env.GOOGLE_MAPS_PLATFORM_KEY,
@@ -635,6 +638,7 @@ const incidentEngine = new IncidentEngine({
   policeNumber: process.env.POLICE_NUMBER,
 });
 app.use(createIncidentRouter(incidentEngine, incidentStore, io));
+app.use("/api/traffic", createTrafficRouter({ supabase, io }));
 
 // Twilio Configuration
 let twilioClient: twilio.Twilio | null = null;

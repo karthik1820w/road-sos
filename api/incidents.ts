@@ -56,6 +56,7 @@ export interface Incident {
   createdAt: number;
   updatedAt: number;
   location?: { lat: number; lng: number; accuracyM?: number };
+  locationHistory?: { lat: number; lng: number; accuracyM?: number; speedMps?: number; at: number }[];
   address?: string;
   confidence?: "LOW" | "MEDIUM" | "HIGH";
   sensorSummary?: Record<string, number | string | boolean>;
@@ -345,8 +346,7 @@ export class IncidentEngine {
     await this.deps.store.saveEmergencyLog(incident);
     await this.transition(incident, "DISPATCHED", `Dispatching to ${incident.contacts.length} contact(s)`);
 
-    const reportUrl = `${baseUrl}/api/incidents/${incident.id}/report.pdf?t=${incident.reportToken}`;
-    const smsBody = buildSmsBody(incident, reportUrl);
+    const smsBody = buildSmsBody(incident, baseUrl);
     const sayText = buildCallScript(incident);
 
     // Each contact is processed concurrently and independently (Promise.allSettled = per-target
@@ -378,6 +378,27 @@ export class IncidentEngine {
     incident.updatedAt = this.now();
     await this.deps.store.save(incident);
     this.emit(incident);
+
+    // Alert if all channels failed
+    if (incident.deliveries.length > 0 && incident.deliveries.every(d => d.status === "failed")) {
+      console.error(`[IncidentEngine] FATAL: All dispatch channels failed for incident ${incident.id}`);
+      if (this.deps.io) {
+        this.deps.io.emit('incident:dispatch_failed', incident);
+      }
+      const webhookUrl = process.env.OPS_ALERT_WEBHOOK_URL;
+      if (webhookUrl) {
+        fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event: 'dispatch_failed',
+            incidentId: incident.id,
+            reason: incident.deliveries[0]?.error || 'Unknown'
+          })
+        }).catch(e => console.warn('[OpsAlert] Failed to fire webhook:', e.message));
+      }
+    }
+
     return incident;
   }
 
@@ -439,7 +460,7 @@ export class IncidentEngine {
 
 // ───────────────────────────── Messages ─────────────────────────────
 
-export function buildSmsBody(incident: Incident, reportUrl: string) {
+export function buildSmsBody(incident: Incident, baseUrl: string) {
   const who = incident.patient.name?.trim() || incident.patient.phone || "A RoadSOS user";
   const kind = incident.kind === "CRASH" ? "possible road crash detected"
     : incident.kind === "SAFETY_WORD" ? "silent distress signal"
@@ -447,7 +468,10 @@ export function buildSmsBody(incident: Incident, reportUrl: string) {
     : incident.kind === "VOICE_HELP" ? "urgent HELP distress signal"
     : "emergency";
   const conf = incident.confidence ? ` (${incident.confidence.toLowerCase()} confidence)` : "";
-  const loc = incident.address ? `${incident.address}\n${mapsLink(incident.location)}` : mapsLink(incident.location);
+  const staticLoc = incident.address ? `${incident.address}\n${mapsLink(incident.location)}` : mapsLink(incident.location);
+  const liveTracking = `Live Tracking: ${baseUrl}/track/${incident.id}?t=${incident.reportToken}`;
+  const reportUrl = `${baseUrl}/api/incidents/${incident.id}/report.pdf?t=${incident.reportToken}`;
+
   const med = [
     incident.patient.bloodGroup && `Blood: ${incident.patient.bloodGroup}`,
     incident.patient.allergies && `Allergies: ${incident.patient.allergies}`,
@@ -465,12 +489,13 @@ export function buildSmsBody(incident: Incident, reportUrl: string) {
   return [
     `ROADSOS DISTRESS ALERT: ${who} — ${kind}${conf}.`,
     aiCondition,
-    `Location: ${loc}`,
+    `Location (Static): ${staticLoc}`,
+    liveTracking,
     med,
     nearestHosp,
-    `Medical Handover Report: ${reportUrl}`,
-    `Reply 1 or press 1 on the call to confirm ambulance dispatch. Emergency: 112`,
-  ].filter(Boolean).join("\n");
+    `Full report: ${reportUrl}`,
+    `Reply ACK to confirm you are responding.`,
+  ].filter(Boolean).join("\n\n");
 }
 
 export function buildCallScript(incident: Incident) {
@@ -679,6 +704,31 @@ export function createIncidentRouter(engine: IncidentEngine, store: IncidentStor
   router.post("/api/incidents/:id/close", requireOwner, async (req, res) => {
     try { res.json({ incident: publicView(await engine.close((req as any).incident)) }); }
     catch (e: any) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+
+  router.post("/api/incidents/:id/location", requireOwner, async (req, res) => {
+    const incident: Incident = (req as any).incident;
+    try {
+      const body = z.object({
+        lat: z.number().min(-90).max(90),
+        lng: z.number().min(-180).max(180),
+        accuracyM: z.number().optional(),
+        speedMps: z.number().optional(),
+      }).parse(req.body);
+
+      incident.location = { lat: body.lat, lng: body.lng, accuracyM: body.accuracyM };
+      if (!incident.locationHistory) incident.locationHistory = [];
+      incident.locationHistory.push({ lat: body.lat, lng: body.lng, accuracyM: body.accuracyM, speedMps: body.speedMps, at: Date.now() });
+      incident.updatedAt = Date.now();
+
+      await store.save(incident);
+      io?.emit("incident:update", publicView(incident));
+      io?.to(`incident:${incident.id}`).emit("incident:update", publicView(incident));
+
+      res.json({ status: "ok" });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
   });
 
   router.get("/api/incidents/:id/report.pdf", async (req, res) => {

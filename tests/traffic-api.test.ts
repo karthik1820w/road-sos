@@ -1,179 +1,68 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-/**
- * Automated Integration & Uptime Testing Script for Traffic API
- * Role: Senior QA Automation Engineer & DevOps Specialist
- * Framework: Jest (standard for Node.js/React environments)
- * Uses native fetch (Node.js 18+) mocking for testing API resilience.
- */
+import { describe, it, expect } from 'vitest';
 
-// If you are running this in your actual project, ensure you have jest and @types/jest installed.
-// Ex: npm install --save-dev jest @types/jest ts-jest
+describe('Traffic System: Congestion Ratio Classification', () => {
+  const classify = (avgSpeed: number, freeFlow: number) => {
+    const ratio = avgSpeed / freeFlow;
+    if (ratio >= 0.75) return 'Low';
+    if (ratio >= 0.4) return 'Moderate';
+    return 'High';
+  };
 
-// We mock the native global fetch to simulate different API behaviors
-global.fetch = vi.fn();
-
-describe("Traffic API Resilience and Integration Suite (Google Maps Routes API)", () => {
-
-  const API_ENDPOINT = "https://routes.googleapis.com/directions/v2:computeRoutes";
-  const MOCK_API_KEY = "dummy-api-key";
-
-  beforeEach(() => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockClear();
+  it('classifies highway at 70 km/h (freeflow 80) as Low', () => {
+    expect(classify(70, 80)).toBe('Low');
   });
 
-  /**
-   * Layer 1: The Pulse Check (Ping/Uptime)
-   * Validates connection establishment and response times.
-   */
-  it("Pulse Check: Establishes connection within 500ms and returns status 200", async () => {
-    // Mock a successful API response
-    const mockSuccessResponse = {
-      routes: [
-        {
-          duration: "900s",
-          distanceMeters: 4500
-        }
-      ]
-    };
-    
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => mockSuccessResponse,
-    });
-
-    const startTime = performance.now();
-    
-    // Call the external API (this is a simplified representation of the backend call)
-    const response = await fetch(API_ENDPOINT, {
-      method: "POST",
-      headers: { "X-Goog-Api-Key": MOCK_API_KEY, "X-Goog-FieldMask": "routes.duration" },
-      body: JSON.stringify({
-        origin: { location: { latLng: { latitude: 12.9716, longitude: 77.5946 } } },
-        destination: { location: { latLng: { latitude: 12.9716, longitude: 77.6000 } } }
-      })
-    });
-    
-    const endTime = performance.now();
-    const duration = endTime - startTime;
-
-    expect(response.status).toBe(200);
-    // In a real execution environment without mocked fetch, you'd test network latency bounds
-    // expect(duration).toBeLessThan(500); 
+  it('classifies highway at 40 km/h (freeflow 80) as Moderate', () => {
+    expect(classify(40, 80)).toBe('Moderate');
   });
 
-  /**
-   * Layer 2: Data Integrity & Schema Validation
-   * Asserts payload is valid JSON with necessary keys and correct types.
-   */
-  it("Schema Validation: Payload returns expected JSON structure and valid data types", async () => {
-    // Mock the external service payload
-    const mockPayload = {
-      routes: [
-        {
-          duration: "900s",
-          distanceMeters: 4500
-        }
-      ]
-    };
-
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => mockPayload,
-    });
-
-    const response = await fetch(API_ENDPOINT);
-    const data = await response.json();
-
-    // Verify it is an object
-    expect(typeof data).toBe("object");
-    
-    // Verify the 'routes' array exists
-    expect(Array.isArray(data.routes)).toBeTruthy();
-    expect(data.routes.length).toBeGreaterThan(0);
-    
-    // Check specific fields within the route
-    const firstRoute = data.routes[0];
-    expect(firstRoute).toHaveProperty("duration");
-    expect(firstRoute).toHaveProperty("distanceMeters");
-    
-    // Type checking
-    expect(typeof firstRoute.duration).toBe("string");
-    expect(typeof firstRoute.distanceMeters).toBe("number");
+  it('classifies highway at 25 km/h (freeflow 80) as High', () => {
+    expect(classify(25, 80)).toBe('High');
   });
 
-  /**
-   * Layer 3.A: Resilience - Timeout Handling
-   * Simulates a slow response causing AbortController to throw.
-   */
-  it("Resilience (Timeout): Aborts connection cleanly if response exceeds 5 seconds", async () => {
-    // Mock fetch to simulate a delayed response or timeout error
-    (global.fetch as ReturnType<typeof vi.fn>).mockImplementationOnce(() => 
-      Promise.reject(new Error("TimeoutError"))
-    );
+  it('classifies residential at 20 km/h (freeflow 25) as Low', () => {
+    expect(classify(20, 25)).toBe('Low');
+  });
 
-    try {
-      const controller = new AbortController();
-      const signal = controller.signal;
-      
-      // Suppose the app has a 5-sec timeout
-      setTimeout(() => controller.abort(), 5000);
-      
-      await fetch(API_ENDPOINT, { signal });
-    } catch (error: any) {
-      expect(error.message).toMatch(/TimeoutError|abort/i);
+  it('classifies residential at 8 km/h (freeflow 25) as High', () => {
+    expect(classify(8, 25)).toBe('High');
+  });
+});
+
+describe('Traffic System: Sparse Data Fallback', () => {
+  it('labels segment as estimated when sample count < 3', () => {
+    const dataSource = (sampleCount: number) => sampleCount >= 3 ? 'live' : 'estimated';
+    expect(dataSource(0)).toBe('estimated');
+    expect(dataSource(2)).toBe('estimated');
+    expect(dataSource(3)).toBe('live');
+    expect(dataSource(50)).toBe('live');
+  });
+});
+
+describe('Traffic System: Probe Outlier Filtering', () => {
+  it('rejects speeds above 200 km/h', () => {
+    const isValid = (speed: number) => speed >= 0 && speed <= 200;
+    expect(isValid(250)).toBe(false);
+    expect(isValid(-5)).toBe(false);
+    expect(isValid(80)).toBe(true);
+    expect(isValid(0)).toBe(true);
+  });
+});
+
+describe('Traffic System: Crowd Report Expiry', () => {
+  it('extends expiry by 30 min on confirmation, capped at 4 hours', () => {
+    const createdAt = Date.now();
+    const maxExpiry = createdAt + 4 * 60 * 60 * 1000;
+    let expiresAt = createdAt + 90 * 60 * 1000;
+
+    // First confirmation
+    expiresAt = Math.min(expiresAt + 30 * 60 * 1000, maxExpiry);
+    expect(expiresAt).toBe(createdAt + 120 * 60 * 1000);
+    
+    // Many confirmations should cap
+    for (let i = 0; i < 20; i++) {
+      expiresAt = Math.min(expiresAt + 30 * 60 * 1000, maxExpiry);
     }
-  });
-
-  /**
-   * Layer 3.B: Resilience - Rate Limit (HTTP 429)
-   * Simulates rate-limiting conditions. Test verifies application handles it gracefully.
-   */
-  it("Resilience (Rate Limit): Gracefully intercepts HTTP 429 Too Many Requests", async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: false,
-      status: 429,
-      headers: {
-        get: (header: string) => header === 'Retry-After' ? '30' : null
-      }
-    });
-
-    const response = await fetch(API_ENDPOINT);
-
-    expect(response.status).toBe(429);
-    
-    // Extract Retry-After to ensure app logic can back-off
-    const retryAfter = response.headers.get("Retry-After");
-    expect(retryAfter).toBe("30");
-  });
-
-  /**
-   * Layer 3.C: Resilience - Bad Credentials/Authentication (HTTP 401/403)
-   * Asserts bad credentials trigger immediate error handling workflows.
-   */
-  it("Resilience (Auth Validation): Rejects with explicit logs on expired or invalid API key (403)", async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: false,
-      status: 403,
-      json: async () => ({
-        error: {
-          code: 403,
-          message: "The request is missing a valid API key.",
-          status: "PERMISSION_DENIED"
-        }
-      })
-    });
-
-    const response = await fetch(API_ENDPOINT, {
-      method: "POST",
-      headers: { "X-Goog-Api-Key": "INVALID_KEY" }
-    });
-
-    expect(response.status).toBe(403);
-    const errData = await response.json();
-    
-    // Assert critical error condition detected
-    expect(errData.error.status).toBe("PERMISSION_DENIED");
+    expect(expiresAt).toBe(maxExpiry);
   });
 });

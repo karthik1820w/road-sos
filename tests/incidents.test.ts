@@ -178,6 +178,31 @@ describe('incident HTTP API + Twilio webhooks', () => {
     expect(buf.subarray(0, 4).toString()).toBe('%PDF');
   });
 
+  it('MANUAL_SOS and SAFETY_WORD automatically prepend policeNumber', async () => {
+    const tw = fakeTwilio();
+    const polNumber = '+919999900088'; // synthetic fixture
+    const hospNumber = '+919999900099';
+    const testEngine = new IncidentEngine({ store, getTwilio: () => tw.client, fromNumber: '+15550000000', policeNumber: polNumber, hospitalNumber: hospNumber });
+    const inc = await testEngine.create({
+      ...baseInput(['+919999900001']),
+      kind: 'SAFETY_WORD',
+      reason: 'Silent distress',
+      patient: { name: 'Karthik' }
+    });
+
+    await testEngine.dispatch(inc, 'https://example.test');
+
+    // policeNumber was automatically prepended to contacts
+    expect(inc.contacts).toContain(polNumber);
+    // hospitalNumber was NOT prepended
+    expect(inc.contacts).not.toContain(hospNumber);
+
+    // Messages sent to both contacts
+    const targets = tw.messages.map((m: any) => m.to);
+    expect(targets).toContain(polNumber);
+    expect(targets).toContain('+919999900001');
+  });
+
   it('VOICE_HELP automatically prepends hospitalNumber and attaches AI medical analysis and recommended hospitals', async () => {
     const tw = fakeTwilio();
     const hospNumber = '+919999900099'; // synthetic fixture

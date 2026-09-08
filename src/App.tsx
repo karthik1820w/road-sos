@@ -13,7 +13,9 @@ import { APIProvider } from '@vis.gl/react-google-maps';
 import { ResponsiveContainer, LineChart, Line, YAxis, CartesianGrid } from 'recharts';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { TrafficUpdate, fetchLiveTrafficData } from './services/trafficService';
+import { TrafficUpdate, fetchLiveTrafficData, submitTrafficProbe, getTrafficSessionId } from './services/trafficService';
+import { updateIncidentLocation } from './services/incidentService';
+import { TrackIncident } from './components/TrackIncident';
 import { TrafficUpdatesUI } from './components/TrafficUpdatesUI';
 
 
@@ -36,6 +38,14 @@ export default function App() {
   const navigate = useNavigate();
   const locationPath = useLocation().pathname;
   
+  if (locationPath.startsWith('/track/')) {
+    return (
+      <Routes>
+        <Route path="/track/:id" element={<TrackIncident />} />
+      </Routes>
+    );
+  }
+
   const [setupComplete, setSetupComplete] = useState(() => localStorage.getItem('roadSosSetupComplete') === 'true');
   const [mapsApiKey, setMapsApiKey] = useState(() => localStorage.getItem('roadsos_maps_key') || INITIAL_GOOGLE_MAPS_KEY);
   const [hasCheckedKey, setHasCheckedKey] = useState(mapsApiKey !== '');
@@ -660,7 +670,8 @@ export default function App() {
                     incidents: [],
                     routes: [],
                     fetchedAt: new Date().toLocaleTimeString(),
-                    radius: ''
+                    radius: '',
+                    updateSource: 'poll'
                  });
                  setFetchingTraffic(false);
                  return;
@@ -811,7 +822,8 @@ export default function App() {
 
     if (!opts.silent) {
       if (outcome.error === 'OFFLINE') speakNotification("You are offline. I opened your messages app with the alert. Send it, then call one one two.");
-      else if (outcome.error === 'ALL_CHANNELS_FAILED') speakNotification("Automatic alerts failed. I opened your messages app so you can send the alert yourself.");
+      else if (outcome.summary?.allFailed) speakNotification(`Automatic alerts failed. Reason: ${outcome.error}. I opened your messages app so you can send the alert yourself.`);
+      else if (outcome.error) speakNotification(`Alert issue: ${outcome.error}`);
       else if (outcome.summary && outcome.summary.sent > 0) speakNotification(`Alert sent to ${outcome.summary.sent} channel${outcome.summary.sent === 1 ? '' : 's'}. Waiting for a contact to confirm.`);
       if (!outcome.error) { setIsEmergency(false); setInitialVoiceState('DISPATCH_PENDING'); setIsVoiceActive(true); }
     }
@@ -1684,10 +1696,26 @@ export default function App() {
         console.warn("[GPS] Initial fix failed:", err);
       }
 
+      let lastProbeTime = 0;
+      let lastIncidentLocTime = 0;
       watchId = await hardwareService.watchLocation((lat, lng, speedMps, accuracyM) => {
         setUserLocation({ lat, lng });
         if (speedMps !== null && speedMps !== undefined && speedMps >= 0) {
           crashDetectorRef.current.pushSpeed({ t: Date.now(), speedMps, accuracyM });
+
+          const now = Date.now();
+          if (isDrivingModeRef.current && now - lastProbeTime > 15000) {
+             submitTrafficProbe(lat, lng, speedMps * 3.6, 0, getTrafficSessionId());
+             lastProbeTime = now;
+           }
+
+          if (activeIncidentRef.current) {
+            const state = activeIncidentRef.current.state;
+            if ((state === 'DETECTED' || state === 'PROBING' || state === 'DISPATCHED') && (now - lastIncidentLocTime > 15000)) {
+               updateIncidentLocation(activeIncidentRef.current.id, lat, lng, accuracyM, speedMps).catch(e => console.warn("Failed to push loc", e));
+               lastIncidentLocTime = now;
+            }
+          }
         }
       });
     };

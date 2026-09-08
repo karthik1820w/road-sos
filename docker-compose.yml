@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  osrm:
+    image: osrm/osrm-backend:latest
+    container_name: road-sos-osrm
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./osrm-data:/data
+    command: osrm-routed --algorithm mld /data/india-latest.osrm
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
