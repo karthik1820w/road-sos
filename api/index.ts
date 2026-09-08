@@ -95,6 +95,7 @@ io.on("connection", (socket) => {
 });
 
 
+
 // Gemini Configuration
 let aiClient: GoogleGenAI | null = null;
 const getAI = () => {

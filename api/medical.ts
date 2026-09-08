@@ -1,5 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import xss from "xss";
+import { retrieveContext } from "./rag.js";
+import { AI_TIERS, MEDICAL_CONFIDENCE_THRESHOLD } from "./aiConfig.js";
 
 export interface AiMedicalAnalysis {
   condition: string;
@@ -8,6 +10,8 @@ export interface AiMedicalAnalysis {
   firstAidInstructions: string[];
   specialtiesNeeded: string[];
   triageSummary: string;
+  confidence?: number;
+  groundedInRetrievedContext?: boolean;
 }
 
 export interface RecommendedHospital {
@@ -250,6 +254,9 @@ export async function analyzeMedicalConditionAndRecommendHospitals(params: {
         `${i + 1}. "${h.name}" (${h.distanceKm} km away, Address: ${h.address}, Phone: ${h.phone || "N/A"}, Rating: ${h.rating ?? "N/A"})`
       ).join("\n");
 
+      const retrievedContext = await retrieveContext(reason, 'medical');
+      const retrievedContextStr = retrievedContext.length > 0 ? "\nRETRIEVED KNOWLEDGE BASE CONTEXT:\n" + retrievedContext.map((r: any) => r.content).join("\n") + "\n" : "";
+
       const prompt = `You are an expert emergency medical physician and triage AI assisting the RoadSOS emergency response system.
 Analyze the following patient profile, emergency distress event, and nearby hospitals:
 
@@ -261,13 +268,13 @@ PATIENT INFORMATION:
 - Distress Reason / Utterance: "${reason}"
 - Sensor / Crash Telemetry: ${JSON.stringify(sensorSummary || {})}
 - Patient Location: Latitude ${lat}, Longitude ${lng}
-
+${retrievedContextStr}
 NEARBY HOSPITALS (via Google Maps):
 ${hospitalListStr}
 
 TASK:
 1. Diagnose the suspected acute medical condition, potential diseases or injuries, and triage severity level.
-2. Formulate immediate critical first aid instructions for on-scene bystanders or user.
+2. Formulate immediate critical first aid instructions for on-scene bystanders or user. Ground your answer in the RETRIEVED KNOWLEDGE BASE CONTEXT if provided.
 3. Determine required hospital specialties and facilities.
 4. Select the best recommended hospital from the provided list based on distance and capability for the patient's condition.
 
@@ -284,15 +291,18 @@ You MUST respond strictly in valid JSON format with NO markdown code blocks (no 
   "specialtiesNeeded": ["Trauma ICU", "Specialty 2"],
   "triageSummary": "Short 1-2 sentence clinical summary for hospital triage team",
   "recommendedHospitalName": "Exact name of best recommended hospital from the list",
-  "recommendationReason": "Why this hospital is best suited for the patient's condition (including distance advantage)"
+  "recommendationReason": "Why this hospital is best suited for the patient's condition (including distance advantage)",
+  "confidence": 0.0 to 1.0,
+  "groundedInRetrievedContext": boolean
 }`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: AI_TIERS.emergencyMedical.model,
         contents: prompt,
         config: {
-          temperature: 0.1,
-          maxOutputTokens: 600,
+          temperature: AI_TIERS.emergencyMedical.temperature,
+          maxOutputTokens: AI_TIERS.emergencyMedical.maxOutputTokens,
+          responseMimeType: "application/json",
         },
       });
 
@@ -300,13 +310,24 @@ You MUST respond strictly in valid JSON format with NO markdown code blocks (no 
       const cleanedJsonStr = responseText.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
       const parsed = JSON.parse(cleanedJsonStr);
 
+      const confidence = parsed.confidence ?? 1.0;
+      const grounded = parsed.groundedInRetrievedContext ?? true;
+      let instructions = Array.isArray(parsed.firstAidInstructions) ? parsed.firstAidInstructions : [];
+
+      if (confidence < MEDICAL_CONFIDENCE_THRESHOLD || !grounded) {
+        console.warn(`[MedicalService] Low confidence (${confidence}, threshold: ${MEDICAL_CONFIDENCE_THRESHOLD}) or ungrounded (${grounded}). Appending disclaimer.`);
+        instructions.push("PLEASE NOTE: Please also contact a medical professional / emergency services for definitive guidance.");
+      }
+
       analysis = {
         condition: parsed.condition || "Acute Emergency Distress",
         severity: (["CRITICAL", "HIGH", "MODERATE", "MILD"].includes(parsed.severity) ? parsed.severity : "HIGH") as any,
         possibleDiseasesOrInjuries: Array.isArray(parsed.possibleDiseasesOrInjuries) ? parsed.possibleDiseasesOrInjuries : [],
-        firstAidInstructions: Array.isArray(parsed.firstAidInstructions) ? parsed.firstAidInstructions : [],
+        firstAidInstructions: instructions,
         specialtiesNeeded: Array.isArray(parsed.specialtiesNeeded) ? parsed.specialtiesNeeded : [],
         triageSummary: parsed.triageSummary || "Emergency triage initiated. Immediate vitals assessment recommended.",
+        confidence,
+        groundedInRetrievedContext: grounded
       };
       recommendedHospitalName = parsed.recommendedHospitalName;
       recommendationReason = parsed.recommendationReason;

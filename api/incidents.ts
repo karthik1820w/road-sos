@@ -87,6 +87,7 @@ export function canTransition(from: IncidentState, to: IncidentState): boolean {
 export interface IncidentStore {
   get(id: string): Promise<Incident | undefined>;
   save(incident: Incident): Promise<void>;
+  saveEmergencyLog(incident: Incident): Promise<void>;
   /** Most recent open incident whose contacts include `phone` (used to match inbound SMS replies). */
   findOpenByContact(phone: string): Promise<Incident | undefined>;
 }
@@ -95,6 +96,7 @@ export class MemoryIncidentStore implements IncidentStore {
   private items = new Map<string, Incident>();
   async get(id: string) { return this.items.get(id); }
   async save(incident: Incident) { this.items.set(incident.id, incident); }
+  async saveEmergencyLog(incident: Incident) { /* no-op in memory */ }
   async findOpenByContact(phone: string) {
     const digits = normalizePhone(phone);
     return [...this.items.values()]
@@ -125,6 +127,27 @@ export class SupabaseMirroredStore extends MemoryIncidentStore {
       });
     } catch (e: any) {
       console.warn("[Incidents] Supabase mirror failed:", e?.message);
+    }
+  }
+  async saveEmergencyLog(incident: Incident) {
+    try {
+      const isDanger = incident.kind === "MANUAL_SOS" || incident.kind === "SAFETY_WORD";
+      const condition_summary = incident.aiMedicalAnalysis 
+        ? `${incident.aiMedicalAnalysis.condition} [${incident.aiMedicalAnalysis.severity}]`
+        : null;
+
+      await this.supabase.from("emergency_logs").insert({
+        incident_id: incident.id,
+        device_token: incident.deviceToken,
+        pathway: isDanger ? "danger" : "medical",
+        trigger_reason: incident.reason,
+        condition_summary,
+        recipients: incident.contacts,
+        location: incident.location,
+        dispatch_status: {},
+      });
+    } catch (e: any) {
+      console.warn("[Incidents] Supabase emergency_logs insert failed:", e?.message);
     }
   }
 }
@@ -319,6 +342,7 @@ export class IncidentEngine {
     if (incident.contacts.length === 0) {
       throw Object.assign(new Error("NO_CONTACTS"), { status: 400 });
     }
+    await this.deps.store.saveEmergencyLog(incident);
     await this.transition(incident, "DISPATCHED", `Dispatching to ${incident.contacts.length} contact(s)`);
 
     const reportUrl = `${baseUrl}/api/incidents/${incident.id}/report.pdf?t=${incident.reportToken}`;
@@ -328,10 +352,11 @@ export class IncidentEngine {
     // Each contact is processed concurrently and independently (Promise.allSettled = per-target
     // failure isolation: one failed recipient cannot abort others).
     await Promise.allSettled(incident.contacts.map(async (to) => {
+      const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
       await this.sendWithRetry(incident, "sms", to, async (client) => {
         const msg = await client.messages.create({
           to, from: this.deps.fromNumber!, body: smsBody,
-          statusCallback: `${baseUrl}/api/twilio/incidents/${incident.id}/status?channel=sms`,
+          ...(isLocal ? {} : { statusCallback: `${baseUrl}/api/twilio/incidents/${incident.id}/status?channel=sms` }),
         });
         return msg.sid;
       });
@@ -343,7 +368,7 @@ export class IncidentEngine {
         twiml.say("No confirmation received. Goodbye.");
         const call = await client.calls.create({
           to, from: this.deps.fromNumber!, twiml: twiml.toString(),
-          statusCallback: `${baseUrl}/api/twilio/incidents/${incident.id}/status?channel=call`,
+          ...(isLocal ? {} : { statusCallback: `${baseUrl}/api/twilio/incidents/${incident.id}/status?channel=call` }),
           statusCallbackEvent: ["initiated", "answered", "completed"],
         });
         return call.sid;
