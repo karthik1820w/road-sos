@@ -4,6 +4,7 @@ import { Bot, Mic, ArrowLeft, Loader2, Volume2 } from 'lucide-react';
 
 import { TrafficUpdate } from '../services/trafficService';
 import { hardwareService } from '../services/hardwareService';
+import { sharedWakeWordEngine } from '../safety/wakeWord';
 
 class GeminiError extends Error {
   code: string;
@@ -573,30 +574,23 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
   };
 
   useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = true;
-      recognitionRef.current.lang = 'en-US';
+    let unsub: (() => void) | null = null;
+    let isActive = true;
 
-      recognitionRef.current.onstart = () => {
-        setState('LISTENING');
-        transcriptBufferRef.current = '';
-        setTranscript('');
-      };
-
-      recognitionRef.current.onresult = (event: any) => {
-        let chunkFinal = '';
-        let chunkInterim = '';
+    sharedWakeWordEngine.subscribe(
+      { word: 'neon' }, // Chatbot modal does not strictly use the wakeword, just the engine
+      (t, f, c, a) => {
+        if (!isActive || stateRef.current === 'PROCESSING' || stateRef.current === 'ERROR') return;
         
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-           if (event.results[i].isFinal) {
-             chunkFinal += event.results[i][0].transcript;
-           } else {
-             chunkInterim += event.results[i][0].transcript;
-           }
+        // Confidence filter: if low confidence, prompt again instead of sending garbled text
+        if (f && c > 0 && c < 0.3) {
+          setLastResponse("Sorry, I didn't catch that — can you repeat?");
+          speak("Sorry, I didn't catch that — can you repeat?");
+          return;
         }
+
+        let chunkFinal = f ? t : '';
+        let chunkInterim = !f ? t : '';
         
         const currentFullText = transcriptBufferRef.current + chunkFinal + chunkInterim;
         
@@ -621,68 +615,37 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
           
           silenceTimerRef.current = setTimeout(() => {
             const textToSend = currentFullText.trim();
-            if (recognitionRef.current) {
-              try { recognitionRef.current.stop(); } catch(e){}
-            }
             if (textToSend) {
                handleQuery(textToSend);
             }
-          }, 1500); // 1.5 second silence means user stopped talking (faster perceived latency)
+          }, 1500);
         }
 
         if (chunkFinal) {
           transcriptBufferRef.current += chunkFinal + ' ';
         }
-      };
-
-      recognitionRef.current.onerror = (event: any) => {
-        if (event.error !== 'aborted' && event.error !== 'no-speech' && event.error !== 'network') {
-          console.error("Chatbot Voice Error:", event.error);
+      },
+      (status) => {
+        if (status === 'blocked') {
           setState('ERROR');
-          if (event.error === 'not-allowed') {
-            setVoiceError("Microphone permission was denied. Please allow microphone access in your browser or type with the keyboard instead.");
-          } else {
-            setVoiceError(`Voice Error: ${event.error}`);
-          }
-        } else if (event.error === 'network') {
+          setVoiceError("Microphone permission was denied.");
+        } else if (status === 'restarting') {
+          // network error is handled by the shared engine.
           console.warn("Chatbot Voice Network Error - retrying automatically.");
+        } else if (status === 'listening' && stateRef.current === 'IDLE') {
+          setState('LISTENING');
+          transcriptBufferRef.current = '';
+          setTranscript('');
         }
-      };
-
-      recognitionRef.current.onend = () => {
-        // If we drop out of listening and we're not processing or speaking, restart listening
-        if (stateRef.current === 'LISTENING' || stateRef.current === 'IDLE') {
-           setTimeout(() => {
-             if (recognitionRef.current) {
-               try { recognitionRef.current.start(); } catch(e) {}
-             }
-           }, 300);
-        }
-      };
-    }
+      }
+    ).then(unsubscribe => { unsub = unsubscribe; });
 
     // Auto-start speaking on mount, which will trigger listening on end
     const timer = setTimeout(() => {
       speak(initialGreeting);
     }, 500);
 
-    // prevent memory overflow by periodically restarting
-    const memoryLeakInterval = setInterval(() => {
-        if (stateRef.current === 'LISTENING' && recognitionRef.current) {
-            try { recognitionRef.current.stop(); } catch(e) {}
-        }
-    }, 45000);
 
-    const watchdogInterval = setInterval(() => {
-        if ((stateRef.current === 'LISTENING' || stateRef.current === 'IDLE') && recognitionRef.current) {
-            try {
-                recognitionRef.current.start();
-            } catch (err: any) {
-                // Ignore InvalidStateError, throw others to console
-                if (err.name !== 'InvalidStateError') console.error(err);
-            }
-        }
-    }, 2000);
 
     const handleChatbotQueryEvent = (e: any) => {
         const queryText = e.detail;
@@ -695,27 +658,21 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
     return () => {
       window.removeEventListener('chatbot-query', handleChatbotQueryEvent);
       clearTimeout(timer);
-      clearInterval(memoryLeakInterval);
-      clearInterval(watchdogInterval);
+      
       cleanUpAudio();
     };
   }, []);
 
   const startListening = () => {
     if (voiceError) return;
-    if (recognitionRef.current) {
-        try { recognitionRef.current.start(); } catch(e) {}
-    }
+    setState('LISTENING');
   };
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!textInput.trim() || state === 'PROCESSING') return;
     
-    // Stop recognition if active
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch(err){}
-    }
+    // Stop recognition is not needed for shared engine
     
     const query = textInput.trim();
     setTextInput('');

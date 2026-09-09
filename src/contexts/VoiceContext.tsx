@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { sharedWakeWordEngine } from '../safety/wakeWord';
 
 interface VoiceContextType {
   isListening: boolean;
@@ -27,21 +28,12 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const startListening = () => {
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.start();
-        setIsListening(true);
-      } catch (e) {
-        // already started
-      }
-    }
+    setTranscript('');
+    setIsListening(true);
   };
 
   const stopListening = () => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-    }
+    setIsListening(false);
   };
 
   const processVoiceIntent = async (text: string, locationContext?: any) => {
@@ -60,35 +52,36 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false; // Set to false to capture discrete commands, then restart
-      recognitionRef.current.interimResults = false;
-      recognitionRef.current.lang = 'en-US';
-
-      recognitionRef.current.onresult = (event: any) => {
-        const current = event.resultIndex;
-        let finalTranscript = event.results[current][0].transcript;
-        setTranscript(finalTranscript);
-      };
-
-      recognitionRef.current.onerror = (event: any) => {
-        // Restart on error if needed
-        setIsListening(false);
-      };
-      
-      recognitionRef.current.onend = () => {
-        setIsListening(false);
-      };
-    }
+    let unsub: (() => void) | null = null;
+    let isActive = true;
     
+    if (isListening) {
+      sharedWakeWordEngine.subscribe(
+        { word: 'neon' }, // arbitrary, since it's just listening
+        (t, f, c, a) => {
+          if (!isActive || !isListening) return;
+          if (f && c > 0 && c < 0.3) {
+             // low confidence filter
+             return;
+          }
+          if (f) {
+            setTranscript(t);
+            setIsListening(false); // capture discrete commands, then restart
+          }
+        },
+        (status) => {
+          if (status === 'blocked' || status === 'idle' || status === 'unsupported') {
+            setIsListening(false);
+          }
+        }
+      ).then(unsubscribe => { unsub = unsubscribe; });
+    }
+
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
+      isActive = false;
+      if (unsub) unsub();
     };
-  }, []);
+  }, [isListening]);
 
   return (
     <VoiceContext.Provider value={{ isListening, transcript, speak, startListening, stopListening, processVoiceIntent }}>

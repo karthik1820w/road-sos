@@ -33,6 +33,23 @@ export interface MatchResult { triggered: boolean; count: number; matchedTokens:
 
 const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const d = Array.from({length: m + 1}, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) d[i][0] = i;
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let j = 1; j <= n; j++) {
+    for (let i = 1; i <= m; i++) {
+      if (a[i - 1] === b[j - 1]) d[i][j] = d[i - 1][j - 1];
+      else d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + 1);
+    }
+  }
+  return d[m][n];
+}
+
+
 export class SafetyWordMatcher {
   private hits: number[] = [];
   private lastInterimCounted = 0;
@@ -70,7 +87,21 @@ export class SafetyWordMatcher {
       const tt = target.split(' ');
       for (let i = 0; i + tt.length <= tokens.length; i++) {
         let ok = true;
-        for (let j = 0; j < tt.length; j++) if (tokens[i + j] !== tt[j]) { ok = false; break; }
+        for (let j = 0; j < tt.length; j++) {
+          const t1 = tokens[i + j];
+          const t2 = tt[j];
+          if (t1 === t2) continue;
+          
+          // Fuzzy match logic
+          const dist = levenshtein(t1, t2);
+          const maxDist = t2.length <= 4 ? 1 : 2; // Allow 1 typo for short words, 2 for longer
+          
+          // "help" length is 4 -> maxDist 1. (e.g. "kelp")
+          if (dist > maxDist) {
+            ok = false;
+            break;
+          }
+        }
         if (ok) { matched.push(target); i += tt.length - 1; }
       }
     }
@@ -108,7 +139,7 @@ export interface WakeWordEngine {
   start(): Promise<void>;
   stop(): void;
   /** Fires with a transcript (webspeech) or the keyword label (porcupine). */
-  onResult(cb: (text: string, isFinal: boolean) => void): void;
+  onResult(cb: (text: string, isFinal: boolean, confidence: number, alternatives: string[]) => void): void;
   onStatus(cb: (status: EngineStatus) => void): void;
 }
 
@@ -128,14 +159,14 @@ export class WebSpeechWakeWordEngine implements WakeWordEngine {
   private restartTimer: any = null;
   private recycleTimer: any = null;
   private backoffMs = 300;
-  private resultCb: ((t: string, f: boolean) => void) | null = null;
+  private resultCb: ((t: string, f: boolean, c: number, a: string[]) => void) | null = null;
   private statusCb: ((s: EngineStatus) => void) | null = null;
 
   constructor(private opts: WebSpeechOptions = {}) {}
 
   static isSupported() { return typeof window !== 'undefined' && !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition); }
 
-  onResult(cb: (t: string, f: boolean) => void) { this.resultCb = cb; }
+  onResult(cb: (t: string, f: boolean, c: number, a: string[]) => void) { this.resultCb = cb; }
   onStatus(cb: (s: EngineStatus) => void) { this.statusCb = cb; }
   private status(s: EngineStatus) { this.statusCb?.(s); }
 
@@ -161,17 +192,27 @@ export class WebSpeechWakeWordEngine implements WakeWordEngine {
     const rec = new SR();
     rec.continuous = true;
     rec.interimResults = true;
-    rec.lang = this.opts.lang || 'en-IN';
+    rec.maxAlternatives = 3;
+    rec.lang = this.opts.lang || localStorage.getItem('roadsos_locale') || 'en-IN';
     rec.onstart = () => { this.backoffMs = 300; this.status('listening'); };
     rec.onresult = (event: any) => {
       if (this.opts.shouldIgnore?.()) return;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const r = event.results[i];
-        this.resultCb?.(r[0].transcript, r.isFinal);
+        const conf = r[0].confidence;
+        const alts = Array.from(r).map((a: any) => a.transcript);
+        this.resultCb?.(r[0].transcript, r.isFinal, conf, alts);
       }
     };
     rec.onerror = (e: any) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { this.status('blocked'); this.running = false; }
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { 
+        this.status('blocked'); 
+        this.running = false; 
+      } else if (e.error === 'network') {
+        this.status('restarting');
+      } else {
+        this.backoffMs = 300;
+      }
     };
     rec.onend = () => {
       if (!this.running) return;
@@ -203,11 +244,11 @@ export interface PorcupineOptions {
 export class PorcupineWakeWordEngine implements WakeWordEngine {
   readonly name = 'porcupine' as const;
   private worker: any = null;
-  private resultCb: ((t: string, f: boolean) => void) | null = null;
+  private resultCb: ((t: string, f: boolean, c: number, a: string[]) => void) | null = null;
   private statusCb: ((s: EngineStatus) => void) | null = null;
 
   constructor(private opts: PorcupineOptions) {}
-  onResult(cb: (t: string, f: boolean) => void) { this.resultCb = cb; }
+  onResult(cb: (t: string, f: boolean, c: number, a: string[]) => void) { this.resultCb = cb; }
   onStatus(cb: (s: EngineStatus) => void) { this.statusCb = cb; }
 
   async start() {
@@ -222,7 +263,7 @@ export class PorcupineWakeWordEngine implements WakeWordEngine {
       this.worker = await PorcupineWorker.create(
         this.opts.accessKey,
         keyword,
-        (detection: { label: string }) => this.resultCb?.(detection.label, true),
+        (detection: { label: string }) => this.resultCb?.(detection.label, true, 1.0, [detection.label]),
         { publicPath: this.opts.modelPath || '/wake/porcupine_params.pv' },
       );
       await WebVoiceProcessor.subscribe(this.worker);
@@ -292,3 +333,51 @@ export function validateSafetyWord(word: string): string | null {
   if (banned.includes(w)) return 'That word is used in normal conversation or as a command. Pick something rarer.';
   return null;
 }
+
+// ───────────────────────────── Shared Engine ─────────────────────────────
+
+export class SharedWakeWordEngine {
+  private engine: WakeWordEngine | null = null;
+  private listeners = new Set<{
+    onResult?: (t: string, f: boolean, c: number, a: string[]) => void,
+    onStatus?: (s: EngineStatus) => void
+  }>();
+  private refCount = 0;
+  private currentConfig: WakeWordFactoryConfig | null = null;
+
+  async subscribe(
+    cfg: WakeWordFactoryConfig,
+    onResult?: (t: string, f: boolean, c: number, a: string[]) => void,
+    onStatus?: (s: EngineStatus) => void
+  ) {
+    const listener = { onResult, onStatus };
+    this.listeners.add(listener);
+    this.refCount++;
+
+    if (!this.engine) {
+      this.currentConfig = cfg;
+      this.engine = await createWakeWordEngine(cfg);
+      this.engine.onResult((t, f, c, a) => this.listeners.forEach(l => l.onResult?.(t, f, c, a)));
+      this.engine.onStatus((s) => this.listeners.forEach(l => l.onStatus?.(s)));
+      await this.engine.start();
+    }
+    
+    // In case engine was already listening
+    if (this.engine) {
+        // Send a status update immediately for the new subscriber if we know the status?
+        // Let's just let it be for now.
+    }
+
+    return () => {
+      this.listeners.delete(listener);
+      this.refCount--;
+      if (this.refCount <= 0) {
+        this.engine?.stop();
+        this.engine = null;
+        this.refCount = 0;
+      }
+    };
+  }
+}
+
+export const sharedWakeWordEngine = new SharedWakeWordEngine();

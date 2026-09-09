@@ -32,7 +32,7 @@ import { GForceScatterPlot } from './components/GForceScatterPlot';
 import { raiseIncident, observeIncident, observeDrivingMode, cancelIncident, closeIncident, contactsFromProfile, flushPendingIncidents, openScheme, getDeviceToken, type Incident, type IncidentKind, type DispatchOutcome, type AiMedicalAnalysis, type RecommendedHospital } from './services/incidentService';
 import { CrashDetector, summarizeVerdict, type CrashVerdict } from './safety/crashDetector';
 import { getStoredVehicleClass, setStoredVehicleClass, type VehicleClass } from './safety/vehicleProfiles';
-import { SafetyWordMatcher, PorcupineWakeWordEngine, loadSafetyWord, saveSafetyWord, validateSafetyWord, type StoredSafetyWord } from './safety/wakeWord';
+import { sharedWakeWordEngine, SafetyWordMatcher, PorcupineWakeWordEngine, loadSafetyWord, saveSafetyWord, validateSafetyWord, type StoredSafetyWord } from './safety/wakeWord';
 import { backgroundService } from './services/backgroundService';
 
 export default function App() {
@@ -252,6 +252,11 @@ export default function App() {
   const safetyWord = safetyWordCfg.word.toUpperCase();
   const [safetyWordDraft, setSafetyWordDraft] = useState('');
   const [safetyWordError, setSafetyWordError] = useState<string | null>(null);
+  const [recognizerLocale, setRecognizerLocale] = useState<string>(() => localStorage.getItem('roadsos_locale') || 'en-IN');
+  
+  useEffect(() => {
+    localStorage.setItem('roadsos_locale', recognizerLocale);
+  }, [recognizerLocale]);
   const [wakeEngineStatus, setWakeEngineStatus] = useState<string>('web-speech');
   const safetyMatcherRef = useRef<SafetyWordMatcher>(new SafetyWordMatcher({ word: safetyWordCfg.word, aliases: safetyWordCfg.aliases }));
   useEffect(() => { safetyMatcherRef.current = new SafetyWordMatcher({ word: safetyWordCfg.word, aliases: safetyWordCfg.aliases }); }, [safetyWordCfg]);
@@ -1268,232 +1273,59 @@ export default function App() {
     if (isEmergency || isVoiceActive || isChatbotModalOpen || !allowVoiceCommand) {
       return;
     }
+    
+    let unsub: (() => void) | null = null;
+    let isActive = true;
 
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      backgroundRecognitionRef.current = new SpeechRecognition();
-      backgroundRecognitionRef.current.continuous = true;
-      backgroundRecognitionRef.current.interimResults = true;
-      backgroundRecognitionRef.current.lang = 'en-US';
-
-      backgroundRecognitionRef.current.onresult = (event: any) => {
+    sharedWakeWordEngine.subscribe(
+      { word: safetyWordCfg.word, shouldIgnore: () => isSpeakingRef.current, lang: recognizerLocale },
+      (t, f, c, a) => {
+        if (!isActive) return;
         if (isSpeakingRef.current) return;
+        
         let finalTranscript = '';
         let interimTranscript = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript + ' ';
-          } else {
-            interimTranscript += event.results[i][0].transcript + ' ';
-          }
+        if (f) {
+           finalTranscript += t + ' ';
+        } else {
+           interimTranscript += t + ' ';
         }
         
         // Normalize transcripts: lowercase and strip all punctuation/special characters
-        const normalizeStr = (str: string) => str.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const normalize = (str: string) => str.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const rawCombined = finalTranscript + interimTranscript;
+        const cleanCombined = normalize(rawCombined);
         
-        const cleanFinal = normalizeStr(finalTranscript);
-        const cleanInterim = normalizeStr(interimTranscript);
-        const cleanCombined = normalizeStr(finalTranscript + ' ' + interimTranscript);
+        if (cleanCombined.trim().length > 0) {
+           // We just keep the existing safety word matcher offline checks inside here for fallback,
+           // but we also rely on the shared engine.
+           // Actually, the engine will handle wake words natively via onResult matching, 
+           // but since we want custom logic, we can keep the manual string checks.
 
-        const isWakeupCommand = cleanCombined.includes('wakeup the application') || cleanCombined.includes('wake up the application') || cleanCombined.includes('start the application') || cleanCombined.includes('start the app') || cleanCombined.includes('wake up the app') || cleanCombined.includes('wakeup the app') || cleanCombined.includes('activate the application') || cleanCombined.includes('activate the app');
-
-        if (!isMonitoring) {
-           if (isWakeupCommand) {
-              speakNotification("Waking up the application. Road SOS protection is now active.");
-              setIsMonitoring(true);
-              if(backgroundRecognitionRef.current) {
-                backgroundRecognitionRef.current.abort();
-              }
+           if (cleanCombined.includes('first aid') || cleanCombined.includes('first aid guide') || cleanCombined.includes('medical assistance') || cleanCombined.includes('medical help') || cleanCombined.includes('what to do in accident')) {
+               console.log("Voice Command: Open First Aid Guide");
+               setIsAIFirstAidActive(true);
+               isAIFirstAidActiveRef.current = true;
+               speakNotification("Opening First Aid AI Assistant.");
+               return;
            }
-           // IMPORTANT: If not monitoring and not a wakeup command, IGNORE everything else.
-           return;
-        }
 
-        // Unified Rolling Transcript for Core Panic Words (Fallback & Safety Word Check)
-        if (cleanFinal.length > 0) {
-           rollingTranscriptsRef.current.push({ text: cleanFinal, time: Date.now() });
+           if (isAIFirstAidActiveRef.current && cleanCombined.length > 2) {
+               console.log("Voice appending to AI First Aid Transcript:", cleanCombined);
+               setAiFirstAidLiveTranscript(prev => prev + " " + cleanCombined);
+               return;
+           }
 
-           if (isAIFirstAidActiveRef.current) {
-               if (aiFirstAidTimeoutRef.current) clearTimeout(aiFirstAidTimeoutRef.current);
-               const incident = cleanFinal.replace(/\bfirst aid\b/g, "").trim();
-               if (incident !== "") {
-                 console.log(`[AI First Aid] Processing incident: "${incident}"`);
-                 handleAIFirstAid(incident);
-                 if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return; 
+           if (cleanCombined.includes('help') || cleanCombined.includes('sos') || cleanCombined.includes('emergency')) {
+               if (f && c > 0 && c < 0.3) {
+                 speakNotification("I heard something like help, please repeat if you need emergency assistance.");
+                 return;
                }
-           }
-        }
-        
-        const currentNow = Date.now();
-        rollingTranscriptsRef.current = rollingTranscriptsRef.current.filter(x => currentNow - x.time <= 10000);
-        const rollingText = rollingTranscriptsRef.current.map(x => x.text).join(' ') + ' ' + cleanInterim;
-
-
-        if (isAIFirstAidActiveRef.current) {
-            let activeText = cleanCombined;
-            if (activeText.includes("first aid")) {
-                const parts = activeText.split("first aid");
-                activeText = parts[parts.length - 1].trim();
-            }
-            if (activeText.length > 0) {
-               setAiFirstAidLiveTranscript(activeText);
-            }
-        }
-
-        // 1. Instant Wake Word Checks (Interim or Final)
-        if (cleanCombined.includes("chatbot") || cleanCombined.includes("chat bot")) {
-           console.log("[Wake Word] CHATBOT detected, opening Voice Assistant.");
-           window.dispatchEvent(new CustomEvent('wake-chatbot'));
-           if (backgroundRecognitionRef.current) {
-             backgroundRecognitionRef.current.abort();
-           }
-           return;
-        }
-
-        if (cleanCombined.includes("first aid") && !isAIFirstAidActiveRef.current) {
-            console.log("[Wake Word] FIRST AID detected instantly.");
-            
-            const splitText = cleanCombined.split("first aid"); 
-            const trailingText = splitText[splitText.length - 1].trim();
-
-            setIsAIFirstAidActive(true);
-            isAIFirstAidActiveRef.current = true;
-
-            if (trailingText.length > 5) {
-                handleAIFirstAid(trailingText);
-            } else {
-                speakNotification("I heard you need first aid. What happened?");
-                setAiFirstAidResponse("I heard you need first aid. What happened?");
-                if (aiFirstAidTimeoutRef.current) clearTimeout(aiFirstAidTimeoutRef.current);
-                aiFirstAidTimeoutRef.current = setTimeout(() => {
-                  if (isAIFirstAidActiveRef.current) {
-                    setIsAIFirstAidActive(false);
-                    isAIFirstAidActiveRef.current = false;
-                    speakNotification("First aid assistant timed out.");
-                  }
-                }, 15000);
-            }
-            if (backgroundRecognitionRef.current) {
-              backgroundRecognitionRef.current.abort();
-            }
-            return;
-        }
-
-        // Feature 3 — strict safety-word matching (no sound-alikes, isolated utterances only)
-        {
-          const m = safetyMatcherRef.current;
-          let fired = false;
-          if (cleanFinal.length > 0) fired = m.feed(cleanFinal, true).triggered;
-          if (!fired && cleanInterim.length > 0) fired = m.feed(cleanInterim, false).triggered;
-          if (fired && !isBroadcastingRef.current) {
-            console.log(`[Wake Word] Safety word "${safetyWord}" x3 detected — silent SOS.`);
-            saveLogEntry(`Safety word ${safetyWord} spoken 3 times`, userLocation);
-            executeNeonDistress();
-            rollingTranscriptsRef.current = [];
-            return;
-          }
-        }
-
-        // ── First Aid Sequencer: capture user's spoken condition ──────────────
-        // This runs before the HELP x3 check so condition text is captured first.
-        if (isWaitingForConditionRef.current && cleanFinal.length > 0) {
-            captureConditionAndDispatch(cleanFinal);
-            rollingTranscriptsRef.current = [];
-            return;
-        }
-
-        const helpRegex = /\b(help|helps|helping|howp|health)\b/g;
-        if ((rollingText.match(helpRegex) || []).length >= 3 && !isBroadcastingRef.current && !isWaitingForConditionRef.current) {
-            const recentlyTriggered = logsRef.current.some(l =>
-                l.reason.includes("HELP triggered 3 times") && (Date.now() - new Date(l.timestamp).getTime() < 60000)
-            );
-            if (!recentlyTriggered) {
-                console.log("[Wake Word] HELP 3x Triggered. Launching First Aid sequencer (medical pathway).");
-                saveLogEntry(`Emergency word HELP triggered 3 times`, userLocation);
-                // Route to Pathway B: activates First Aid Assistant, waits 10 s, then dispatches
-                launchFirstAidAndDispatch("Voice activated emergency distress alert (HELP spoken 3 times)");
-            }
-            rollingTranscriptsRef.current = [];
-            return;
-        }
-
-
-        // 2. Cancellation Check (Instant)
-        const wantsToCancel = ["cancel", "safe", "stop", "abort", "reset", "wait", "dismiss", "false"].some(word => cleanCombined.includes(word)) || 
-                              cleanCombined.includes("i am safe") || 
-                              cleanCombined.includes("i'm safe");
-        
-        if (wantsToCancel) {
-          let canceledSomething = false;
-          if (isDistressPendingRef.current) {
-            console.log(`[Safety] Voice Cancellation Detected: "${cleanCombined}"`);
-            cancelDistress();
-            canceledSomething = true;
-          }
-          if (isSafetyCheckingRef.current) {
-            console.log(`[Safety] Voice Cancellation of Safety Probe: "${cleanCombined}"`);
-            cancelSafetyVerification();
-            canceledSomething = true;
-          }
-          if (isWaitingForIncidentRef.current) {
-            if (safetyCheckTimerRef.current) clearTimeout(safetyCheckTimerRef.current);
-            setIsWaitingForIncident(false);
-            isWaitingForIncidentRef.current = false;
-            speakNotification("Incident report cancelled.");
-            canceledSomething = true;
-          }
-          if (isAIFirstAidActiveRef.current) {
-            setIsAIFirstAidActive(false);
-            isAIFirstAidActiveRef.current = false;
-            setAiFirstAidLiveTranscript("");
-            speakNotification("First aid assistant closed.");
-            canceledSomething = true;
-          }
-          if (canceledSomething) return;
-        }
-
-        // 3. Process robust occurrences on FINALized results (to prevent duplicate interim counts)
-        if (cleanCombined.length > 0) {
-           const executeAndClear = () => { if (backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); };
-           const _realCleanFinal = cleanCombined;
-           const cleanCombinedAlias = cleanCombined;
-           // Handle Safety Verification Flow responses
-           if (isSafetyCheckingRef.current) {
-             const lowerVal = cleanCombined.toLowerCase();
-             if (
-               lowerVal.includes("i am ok") || 
-               lowerVal.includes("im ok") || 
-               lowerVal.includes("i'm ok") || 
-               lowerVal.includes("i m ok") || 
-               lowerVal.includes("i am okay") || 
-               lowerVal.includes("i'm okay") || 
-               lowerVal.includes("im okay") || 
-               lowerVal.includes("i m okay") ||
-               lowerVal === "ok" ||
-               lowerVal === "okay" ||
-               lowerVal === "safe" ||
-               lowerVal.includes("i am safe") ||
-               lowerVal.includes("i'm safe")
-             ) {
-               console.log("[Safety Probe] User confirmed: I am OK. Cancelling safety features.");
-               cancelSafetyVerification();
-               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
-             }
-             if (
-               lowerVal.includes("i need help") || 
-               lowerVal.includes("need help") || 
-               lowerVal.includes("help") || 
-               lowerVal.includes("danger")
-             ) {
-               console.log("[Safety Probe] User stated: I NEED HELP. Triggering HELP functionality.");
-               executeHelpFunctionality("User said I NEED HELP during safety verification probe");
-               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
-             }
-           }
-
-           if (isWaitingForIncidentRef.current) {
-             handleIncidentResponse(cleanCombined);
-             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+               console.log("Voice SOS Triggered");
+               const type = cleanCombined.includes('police') ? 'Police' : 'Ambulance';
+               speakNotification("SOS command recognized. Initiating emergency procedures.");
+               executeDistressBroadcast("Voice Command Emergency Triggered", true);
+               return;
            }
 
            // Voice Controls for Features (Alexa style)
@@ -1506,14 +1338,14 @@ export default function App() {
              } else {
                speakNotification("Driving mode is already on.");
              }
-             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+             return;
            } else if (turnOffDriveRegex.test(cleanCombined)) {
              if (isDrivingModeRef.current) {
                toggleDrivingModeRef.current();
              } else {
                speakNotification("Driving mode is already off.");
              }
-             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+             return;
            }
 
            if (cleanCombined.includes('wakeup the application') || cleanCombined.includes('wake up the application') || cleanCombined.includes('start the application') || cleanCombined.includes('start the app') || cleanCombined.includes('wake up the app') || cleanCombined.includes('wakeup the app')) {
@@ -1523,13 +1355,13 @@ export default function App() {
              } else {
                speakNotification("The application is already awake and active.");
              }
-             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+             return;
            }
 
            if (cleanCombined.includes('shutdown the application') || cleanCombined.includes('shut down the application') || cleanCombined.includes('close the application') || cleanCombined.includes('close the app') || cleanCombined.includes('shutdown the app') || cleanCombined.includes('shut down the app')) {
              speakNotification("Shutting down the application. Voice wake up is still active.");
              setIsMonitoring(false);
-             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+             return;
            }
            
            if (cleanCombined.includes("open voice assistant") || cleanCombined.includes("open chatbot") || cleanCombined.includes("start voice assistant")) {
@@ -1537,7 +1369,7 @@ export default function App() {
              setIsChatbotModalOpen(true);
              setChatbotGreeting("Voice assistant opened. How can I help you?");
              speakNotification("Voice assistant opened. How can I help you?");
-             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+             return;
            } else if (cleanCombined.includes("close voice assistant") || cleanCombined.includes("close chatbot") || cleanCombined.includes("stop voice assistant") || cleanCombined.includes("close assistant") || cleanCombined.includes("stop chatbot") || cleanCombined.includes("exit assistant") || cleanCombined.includes("exit chatbot")) {
              setIsVoiceActive(false);
              setIsChatbotModalOpen(false);
@@ -1545,7 +1377,7 @@ export default function App() {
              isAIFirstAidActiveRef.current = false;
              setAiFirstAidLiveTranscript("");
              speakNotification("Assistant closed.");
-             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+             return;
            }
            
            if (cleanCombined.includes("open traffic") || cleanCombined.includes("open map") || cleanCombined.includes("show map")) {
@@ -1571,7 +1403,7 @@ export default function App() {
                 if (route.keywords.some(kw => cleanCombined === kw || cleanCombined.includes(`open ${kw}`) || cleanCombined.includes(`show ${kw}`) || cleanCombined.includes(`go to ${kw}`) || cleanCombined.includes(kw))) {
                     navigate(route.path);
                     speakNotification(`Opening ${route.keywords[0]}...`);
-                    if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+                    return;
                 }
             }
 
@@ -1580,19 +1412,19 @@ export default function App() {
                isWaitingForEmergencyChoiceRef.current = false;
                speakNotification("Calling emergency contact.");
                executeDistressBroadcast("User requested emergency contact via voice", false);
-               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+               return;
              } else if (cleanCombined.includes("nearest") || cleanCombined.includes("hospital")) {
                isWaitingForEmergencyChoiceRef.current = false;
                speakNotification("Calling nearest hospital.");
                callNearestHospital();
-               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+               return;
              }
            }
 
            if (cleanCombined.includes("i had an accident") || cleanCombined.includes("had an accident") || cleanCombined === "accident") {
              isWaitingForEmergencyChoiceRef.current = true;
              speakNotification("Should I contact emergency number or nearest hospital?");
-             if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+             return;
            }
 
            // App UI Commands
@@ -1605,14 +1437,14 @@ export default function App() {
                setTimeout(() => {
                  window.dispatchEvent(new CustomEvent('chatbot-query', { detail: cleanCombined }));
                }, 500);
-               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+               return;
            }
 
            if (cleanCombined === "hello" || cleanCombined.includes("hello") || cleanCombined === "hi" || cleanCombined === "heilo" || cleanCombined.includes("hi ") || cleanCombined.includes("hey ")) {
                console.log("Voice Command: Hello");
                setChatbotGreeting(medicalInfoRef.current.name ? `Hello ${medicalInfoRef.current.name}, how can I help?` : 'Hello, how can I help?');
                setIsChatbotModalOpen(true);
-               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+               return;
            }
 
            if (cleanCombined === "refresh" || cleanCombined.includes("refresh the app") || cleanCombined.includes("refresh page")) {
@@ -1631,7 +1463,7 @@ export default function App() {
                const uiEl = document.getElementById("traffic-updates-section");
                if (uiEl) uiEl.scrollIntoView({ behavior: 'smooth' });
                rollingTranscriptsRef.current = [];
-               if(backgroundRecognitionRef.current) backgroundRecognitionRef.current.abort(); return;
+               return;
            }
 
            if (cleanCombined.includes("go to map search")) {
@@ -1646,66 +1478,27 @@ export default function App() {
                isWaitingForMapSearchRef.current = false;
                speakNotification(`Searching map for ${cleanCombined.trim()}`);
            }
-         }
-      };
-
-      backgroundRecognitionRef.current.onstart = () => {
-        window.dispatchEvent(new CustomEvent('health-mic-active', { detail: true }));
-      };
-
-      backgroundRecognitionRef.current.onend = () => {
-        window.dispatchEvent(new CustomEvent('health-mic-active', { detail: false }));
-        if (micBlockedRef.current) return; // permission denied: stop the restart loop, the HUD shows "Mic Idle"
-        if (!isEmergency && !isVoiceActive && !isChatbotModalOpen) {
-          setTimeout(() => {
-            if (backgroundRecognitionRef.current) {
-               try {
-                 backgroundRecognitionRef.current.start();
-               } catch (e) {
-                 console.log("[Watchdog] Background Voice Rec failed to restart automatically.", e);
-               }
-            }
-          }, 300);
         }
-      };
-
-      backgroundRecognitionRef.current.onerror = (event: any) => {
-        if (event.error !== 'no-speech') {
-          console.warn("[Watchdog] Speech Recognition Error:", event.error);
+      },
+      (status) => {
+        if (status === 'listening') {
+          window.dispatchEvent(new CustomEvent('health-mic-active', { detail: true }));
+        } else {
+          window.dispatchEvent(new CustomEvent('health-mic-active', { detail: false }));
         }
-        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          micBlockedRef.current = true; // fatal: browser/OS denied the microphone
-          return;
+        if (status === 'blocked') {
+          micBlockedRef.current = true;
         }
-        // other errors => we rely on onend to restart
-      };
-
-      try {
-        if (!isChatbotModalOpen) {
-          backgroundRecognitionRef.current.start();
-        }
-      } catch (e) {
-        console.error("Speech Recognition Start Error:", e);
       }
-    }
-    
-    // Auto-restart interval to prevent event.results buffer memory leak in Chrome
-    const memoryLeakInterval = setInterval(() => {
-        if (backgroundRecognitionRef.current && !micBlockedRef.current) {
-            try {
-               backgroundRecognitionRef.current.stop(); // onend will auto-restart it
-            } catch(e) {}
-        }
-    }, 45000);
-    
+    ).then(unsubscribe => {
+      unsub = unsubscribe;
+    });
+
     return () => {
-      clearInterval(memoryLeakInterval);
-      if (backgroundRecognitionRef.current) {
-          backgroundRecognitionRef.current.onend = null; // prevent auto-restart loop
-          backgroundRecognitionRef.current.abort();
-      }
+      isActive = false;
+      if (unsub) unsub();
     };
-  }, [isEmergency, isVoiceActive, isMonitoring, safetyWord, isChatbotModalOpen, allowVoiceCommand]);
+  }, [isEmergency, isVoiceActive, isMonitoring, isChatbotModalOpen, allowVoiceCommand, safetyWordCfg.word, recognizerLocale]);
 
   useEffect(() => {
     // Check if motion is supported
@@ -3112,6 +2905,22 @@ export default function App() {
                     {backgroundMode === 'foreground-service' ? 'Background protection: active' : backgroundMode === 'wake-lock' ? 'Background protection: limited (screen must stay on)' : 'Background protection: off'}
                   </span>                  <span className="px-2 py-1 rounded-md bg-slate-800 text-slate-300">Contacts: {contactsFromProfile(medicalInfo).length}</span>
                 </div>
+              </div>
+              <div className="flex items-center justify-between p-4 bg-slate-950/50 border border-slate-800 rounded-2xl">
+                <div>
+                  <h4 className="text-sm font-bold text-white mb-1">Spoken Language / Accent</h4>
+                  <p className="text-[10px] text-slate-400">Select your voice recognition locale</p>
+                </div>
+                <select 
+                  value={recognizerLocale} 
+                  onChange={(e) => setRecognizerLocale(e.target.value)}
+                  className="bg-slate-800 text-white text-xs p-2 rounded-xl border border-slate-700 outline-none"
+                >
+                  <option value="en-IN">English (India)</option>
+                  <option value="en-US">English (US)</option>
+                  <option value="en-GB">English (UK)</option>
+                  <option value="hi-IN">Hindi (India)</option>
+                </select>
               </div>
               <div className="flex items-center justify-between p-4 bg-slate-950/50 border border-slate-800 rounded-2xl">
                 <div>

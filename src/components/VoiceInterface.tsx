@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Mic, Phone, ArrowLeft, ShieldCheck, HeartPulse, Sparkles, Navigation } from 'lucide-react';
 import { geoapifyService, Facility } from '../services/geoapifyService';
+import { sharedWakeWordEngine } from '../safety/wakeWord';
 import { raiseIncident, observeIncident, contactsFromProfile, type Incident, type IncidentKind } from '../services/incidentService';
 
 interface VoiceInterfaceProps {
@@ -149,110 +150,76 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
   };
 
   useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = true;
-      recognitionRef.current.lang = 'en-US';
+    let unsub: (() => void) | null = null;
+    let isActive = true;
 
-      recognitionRef.current.onstart = () => {
-        console.log("[VOICE DEBUG] Microphone Authorized / Active");
-        transcriptBufferRef.current = '';
-        setTranscript('');
-      };
+    if (state === 'RECORDING') {
+      sharedWakeWordEngine.subscribe(
+        { word: 'neon', shouldIgnore: () => isSpeakingRef.current },
+        (t, f, c, a) => {
+          if (!isActive || state !== 'RECORDING') return;
+          if (isSpeakingRef.current) return;
+          
+          let chunkFinal = f ? t : '';
+          let chunkInterim = !f ? t : '';
 
-      recognitionRef.current.onresult = (event: any) => {
-        if (isSpeakingRef.current) return;
-        let chunkFinal = '';
-        let chunkInterim = '';
-        
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          if (event.results[i].isFinal) {
-            chunkFinal += event.results[i][0].transcript;
-          } else {
-            chunkInterim += event.results[i][0].transcript;
+          if (chunkFinal || chunkInterim) {
+            console.log("[VOICE DEBUG] Sound Detected (User is speaking...)");
           }
-        }
-        
-        if (chunkFinal || chunkInterim) {
-          console.log("[VOICE DEBUG] Sound Detected (User is speaking...)");
-        }
+          
+          // Incorporate confidence threshold (confidence filter)
+          if (f && c > 0 && c < 0.3) {
+             console.log("[VOICE DEBUG] Ignored due to low confidence:", c);
+             return;
+          }
 
-        const currentFullText = transcriptBufferRef.current + chunkFinal + chunkInterim;
-        setTranscript(currentFullText);
+          const currentFullText = transcriptBufferRef.current + chunkFinal + chunkInterim;
+          setTranscript(currentFullText);
 
-        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-        
-        if (currentFullText.trim().length > 0) {
-          silenceTimerRef.current = setTimeout(() => {
-            console.log("[VOICE DEBUG] Silence Detected - Sending to Gemini");
-            const textToSend = currentFullText.trim();
-            console.log(`[VOICE DEBUG] Final Transcription: "${textToSend}"`);
-            
-            if (recognitionRef.current) {
-              try { recognitionRef.current.stop(); } catch(e){}
-            }
-            if (textToSend && processVoiceRef.current) {
-               processVoiceRef.current(textToSend);
-            }
-          }, 700);
-        }
+          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+          
+          if (currentFullText.trim().length > 0) {
+            silenceTimerRef.current = setTimeout(() => {
+              console.log("[VOICE DEBUG] Silence Detected - Sending to Gemini");
+              const textToSend = currentFullText.trim();
+              console.log(`[VOICE DEBUG] Final Transcription: "${textToSend}"`);
+              
+              if (textToSend && processVoiceRef.current) {
+                 processVoiceRef.current(textToSend);
+              }
+            }, 700);
+          }
 
-        if (chunkFinal) {
-          transcriptBufferRef.current += chunkFinal + ' ';
+          if (chunkFinal) {
+            transcriptBufferRef.current += chunkFinal + ' ';
+          }
+        },
+        (status) => {
+           if (status === 'blocked') {
+             setError("Microphone access denied.");
+             setState('IDLE');
+           }
         }
-      };
-
-      recognitionRef.current.onerror = (event: any) => {
-        if (event.error !== 'aborted' && event.error !== 'no-speech') {
-          console.error("[VOICE DEBUG] Speech Error:", event.error);
-        }
-        if (event.error === 'not-allowed') {
-          console.error("[VOICE DEBUG] Permission denied by OS/Browser.");
-          setError("Microphone access denied. Please enable it in browser settings.");
-        } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
-          setError(`Voice Error: ${event.error}`);
-        }
-        setState('IDLE');
-      };
-
-      recognitionRef.current.onend = () => {
-        if (state === 'RECORDING') {
-          // Restart to maintain seamless flow
-          // Can be omitted unless we want strict loop
-        }
-      };
-    } else {
-      setError("Speech recognition is not supported in this browser.");
+      ).then(unsubscribe => { unsub = unsubscribe; });
     }
 
     return () => {
+      isActive = false;
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      if (recognitionRef.current) {
-        recognitionRef.current.onend = null;
-        try { recognitionRef.current.abort(); } catch(e) {}
-      }
+      if (unsub) unsub();
     };
   }, [state, emergencyState]);
 
   const startRecording = async () => {
-    if (recognitionRef.current) {
-      const granted = await checkMicrophonePermission();
-      if (!granted) {
-        setError("Microphone access denied. Please enable it in browser settings.");
-        return;
-      }
-      setTranscript('');
-      transcriptBufferRef.current = '';
-      setError(null);
-      setState('RECORDING');
-      try {
-        recognitionRef.current.start();
-      } catch (e) {
-        console.error("[VOICE DEBUG] Failed to start recognition:", e);
-      }
+    const granted = await checkMicrophonePermission();
+    if (!granted) {
+      setError("Microphone access denied. Please enable it in browser settings.");
+      return;
     }
+    setTranscript('');
+    transcriptBufferRef.current = '';
+    setError(null);
+    setState('RECORDING');
   };
 
   useEffect(() => {
@@ -649,7 +616,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
             </p>
           </div>
           <button 
-             onClick={() => recognitionRef.current?.stop()}
+             onClick={() => setState('IDLE')}
              className="mt-6 text-[10px] font-black text-slate-500 uppercase tracking-widest hover:text-white"
           >
             Done Speaking
