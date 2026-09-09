@@ -13,7 +13,7 @@ import { APIProvider } from '@vis.gl/react-google-maps';
 import { ResponsiveContainer, LineChart, Line, YAxis, CartesianGrid } from 'recharts';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { TrafficUpdate, fetchLiveTrafficData, submitTrafficProbe, getTrafficSessionId } from './services/trafficService';
+import { TrafficUpdate, fetchLiveTrafficData, submitTrafficProbe, getTrafficSessionId, applyTrafficSocketUpdate, subscribeToTrafficUpdates } from './services/trafficService';
 import { updateIncidentLocation } from './services/incidentService';
 import { TrackIncident } from './components/TrackIncident';
 import { TrafficUpdatesUI } from './components/TrafficUpdatesUI';
@@ -626,6 +626,24 @@ export default function App() {
   const [trafficUpdate, setTrafficUpdate] = useState<TrafficUpdate | null>(null);
   const [fetchingTraffic, setFetchingTraffic] = useState(false);
   const [showTrafficMap, setShowTrafficMap] = useState(false);
+
+  useEffect(() => {
+    if (!showTrafficMap || !userLocation) return;
+    
+    // Subscribe to real-time traffic + weather events when panel is open
+    const unsubscribe = subscribeToTrafficUpdates(
+      userLocation.lat,
+      userLocation.lng,
+      2.5,
+      (payload) => {
+        setTrafficUpdate(current => applyTrafficSocketUpdate(current, payload));
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [showTrafficMap, userLocation?.lat, userLocation?.lng]);
 
   useEffect(() => {
     let interval: any;

@@ -47,6 +47,55 @@ const getGeoRoom = (lat: number, lng: number) =>
 const hashSession = (s: string) =>
   crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
 
+const weatherCache = new Map<string, { data: any; timestamp: number }>();
+
+export async function getWeatherForLocation(lat: number, lng: number, io?: SocketServer) {
+  const gridKey = `weather:${Math.round(lat * 10)}:${Math.round(lng * 10)}`;
+  const now = Date.now();
+  const cached = weatherCache.get(gridKey);
+
+  // Cache for 10 minutes
+  if (cached && now - cached.timestamp < 10 * 60 * 1000) {
+    return cached.data;
+  }
+
+  try {
+    const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,precipitation&timezone=auto`);
+    const data = await res.json();
+    if (data && data.current) {
+      const precip = data.current.precipitation || 0;
+      // Heuristic: > 1.5mm/hr precipitation means roads are significantly wet
+      const isWet = precip > 1.5;
+      
+      const parsedData = {
+        temperature: data.current.temperature_2m,
+        humidity: data.current.relative_humidity_2m,
+        precipitation: precip,
+        isWet,
+        summary: `Current temperature is ${data.current.temperature_2m}°C, humidity is ${data.current.relative_humidity_2m}%, precipitation is ${precip}mm.`
+      };
+
+      const previouslyWet = cached?.data.isWet;
+      weatherCache.set(gridKey, { data: parsedData, timestamp: now });
+
+      // If condition changes, emit real-time push to clients in this area
+      if (io && cached && previouslyWet !== isWet) {
+        // geoRoom is based on Math.floor(lat*10), which roughly matches our Math.round grid
+        io.to(getGeoRoom(lat, lng)).emit('traffic:update', { 
+          type: 'weather', 
+          data: parsedData 
+        });
+      }
+
+      return parsedData;
+    }
+  } catch (e) {
+    console.error('[Traffic] Weather fetch failed:', e);
+  }
+
+  return cached?.data || { temperature: 0, humidity: 0, precipitation: 0, isWet: false, summary: "Weather data unavailable." };
+}
+
 function classifyCongestion(avgSpeed: number, freeFlow: number) {
   const ratio = avgSpeed / freeFlow;
   if (ratio >= 0.75) return 'Low';
@@ -164,7 +213,7 @@ export function createTrafficRouter({ supabase, io }: TrafficRouterDeps) {
       const radiusKm = parseFloat(req.query.radiusKm as string) || 2.5;
       if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ error: 'Invalid lat/lng' });
 
-      const [staticIncidents, crowdReports, segments] = await Promise.all([
+      const [staticIncidents, crowdReports, segments, weatherData] = await Promise.all([
         fetchOverpassIncidents(lat, lng, radiusKm * 1000),
         supabase
           ? supabase.from('reported_incidents').select('*').gt('expires_at', new Date().toISOString()).then(r => r.data || [])
@@ -172,6 +221,7 @@ export function createTrafficRouter({ supabase, io }: TrafficRouterDeps) {
         supabase
           ? supabase.from('traffic_segments').select('*').then(r => r.data || [])
           : Promise.resolve([]),
+        getWeatherForLocation(lat, lng, io)
       ]);
 
       // Build routes from OSRM
@@ -183,7 +233,7 @@ export function createTrafficRouter({ supabase, io }: TrafficRouterDeps) {
           { dlat: lat - 0.018, dlng: lng },
         ];
         const routeResults = await Promise.allSettled(probes.map(async (p) => {
-          const url = `${OSRM_URL}/route/v1/driving/${lng},${lat};${p.dlng},${p.dlat}?overview=false&steps=true`;
+          const url = `${OSRM_URL}/route/v1/driving/${lng},${lat};${p.dlng},${p.dlat}?overview=false&steps=true&annotations=nodes`;
           const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
           const d = await r.json();
           const route = d.routes?.[0];
@@ -193,7 +243,31 @@ export function createTrafficRouter({ supabase, io }: TrafficRouterDeps) {
           const durMin = Math.round(route.duration / 60);
           const speedKmh = Math.round((route.distance / 1000) / ((route.duration || 1) / 3600));
           const freeFlow = DEFAULT_FREEFLOW_SPEEDS['primary'] || 50;
-          const matchedSeg = (segments as any[]).find((s: any) => s.way_id && s.avg_speed_kmh);
+
+          const routeNodes = route.legs?.[0]?.annotation?.nodes || [];
+          const routeNodesSet = new Set(routeNodes.map((n: any) => n.toString()));
+
+          let matchedSeg = null;
+          let minGridDist = Infinity;
+
+          for (const s of (segments as any[])) {
+            if (!s.way_id || !s.avg_speed_kmh) continue;
+            if (routeNodesSet.has(s.way_id)) {
+              matchedSeg = s;
+              break; // Found an exact node match on the route
+            }
+            if (s.way_id.startsWith('grid:')) {
+              const parts = s.way_id.split(':');
+              const cellLat = parseFloat(parts[1]);
+              const cellLng = parseFloat(parts[2]);
+              const dist = haversineKm(lat, lng, cellLat, cellLng);
+              if (dist < minGridDist && dist < 1.0) { // Within 1km of route start
+                minGridDist = dist;
+                matchedSeg = s;
+              }
+            }
+          }
+
           const effectiveSpeed = matchedSeg ? matchedSeg.avg_speed_kmh : speedKmh;
           const congestion = classifyCongestion(effectiveSpeed, freeFlow);
           const dataSource = matchedSeg && matchedSeg.sample_count >= 3 ? 'live' : 'estimated';
@@ -243,6 +317,19 @@ export function createTrafficRouter({ supabase, io }: TrafficRouterDeps) {
 
       const allIncidents = [...staticIncidents, ...crowdIncidents]
         .sort((a, b) => parseFloat(a.distKm || '99') - parseFloat(b.distKm || '99'));
+
+      if (weatherData && weatherData.isWet) {
+        allIncidents.unshift({
+          id: 'weather_wet',
+          label: `🌧️ Wet Road Advisory`,
+          type: 'warning',
+          source: 'weather',
+          lat, lng,
+          distKm: '0.0',
+          name: 'Local Area',
+          confirmCount: 0
+        });
+      }
 
       const highRoutes = routes.filter(r => r.congestion === 'High').length;
       const modRoutes = routes.filter(r => r.congestion === 'Moderate').length;

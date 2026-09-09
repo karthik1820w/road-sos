@@ -11,7 +11,7 @@ export interface TrafficIncident {
   lng: number | null;
   distKm: string | null;
   name: string | null;
-  source: 'static' | 'crowd';
+  source: 'static' | 'crowd' | 'weather';
   confirmCount?: number;
   id?: string;
 }
@@ -201,13 +201,87 @@ export async function confirmHazard(reportId: string) {
   return res.json();
 }
 
+export function applyTrafficSocketUpdate(
+  current: TrafficUpdate | null,
+  payload: { type: string; data: any }
+): TrafficUpdate | null {
+  if (!current) return null;
+
+  const next = { ...current, updateSource: 'socket' as const, fetchedAt: new Date().toLocaleTimeString() };
+
+  if (payload.type === 'new_report') {
+    const report = payload.data;
+    const distKm = haversineKm(current.lat, current.lng, report.lat, report.lng).toFixed(1);
+    
+    // Check if it's already in the list
+    if (!next.incidents.some(i => i.id === report.id)) {
+      const crowdIncident: TrafficIncident = {
+        id: report.id,
+        label: `🚨 ${report.type.charAt(0).toUpperCase() + report.type.slice(1)}`,
+        type: report.type === 'accident' ? 'danger' : 'warning',
+        source: 'crowd',
+        lat: report.lat,
+        lng: report.lng,
+        distKm,
+        name: null,
+        confirmCount: report.confirm_count || 0
+      };
+
+      next.incidents = [...next.incidents, crowdIncident].sort(
+        (a, b) => parseFloat(a.distKm || '99') - parseFloat(b.distKm || '99')
+      );
+    }
+  } else if (payload.type === 'confirmed') {
+    const updated = payload.data;
+    next.incidents = next.incidents.map(inc => 
+      inc.id === updated.id ? { ...inc, confirmCount: updated.confirm_count } : inc
+    );
+  } else if (payload.type === 'segments') {
+    // We only recalculate local area live data congestion for simplicity here
+    // as full OSRM route recalculation requires API calls. 
+    // We update the data source and fetch full updates if we needed, but for now we'll 
+    // just re-evaluate if it's high enough to trigger congestion.
+    // The main fetchLiveTrafficData is expected to be called periodically or manually for full OSRM routing.
+    // For now, let's just trigger updateSource: socket.
+  } else if (payload.type === 'weather') {
+    const weatherData = payload.data;
+    // Remove old weather incidents
+    next.incidents = next.incidents.filter(i => i.source !== 'weather');
+    
+    if (weatherData.isWet) {
+      next.incidents.unshift({
+        id: 'weather_wet',
+        label: `🌧️ Wet Road Advisory`,
+        type: 'warning',
+        source: 'weather',
+        lat: current.lat,
+        lng: current.lng,
+        distKm: '0.0',
+        name: 'Local Area',
+        confirmCount: 0
+      });
+    }
+  }
+
+  // Recalculate congestion
+  const highRoutes = next.routes.filter(r => r.congestion === 'High').length;
+  const modRoutes = next.routes.filter(r => r.congestion === 'Moderate').length;
+  let congestionLevel: 'Low' | 'Moderate' | 'High' = 'Low';
+  if (highRoutes >= 2 || next.incidents.filter(i => i.source === 'crowd').length >= 4) congestionLevel = 'High';
+  else if (modRoutes >= 1 || next.incidents.length >= 2) congestionLevel = 'Moderate';
+  next.congestionLevel = congestionLevel;
+  next.trafficPresent = congestionLevel !== 'Low' || next.incidents.length > 0;
+
+  return next;
+}
+
 // ---------------------------------------------------------------------------
 // Socket.IO real-time subscription
 // ---------------------------------------------------------------------------
 
 export function subscribeToTrafficUpdates(
   lat: number, lng: number, radiusKm: number,
-  onUpdate: (update: Partial<TrafficUpdate>) => void,
+  onUpdate: (payload: { type: string; data: any }) => void,
 ): () => void {
   const socket = getSocket();
   socket.emit('traffic:subscribe', { lat, lng, radiusKm });

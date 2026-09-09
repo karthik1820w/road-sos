@@ -32,6 +32,7 @@ export const TrafficUpdatesUI: React.FC<{
 
   const crowdIncidents = update.incidents.filter(i => i.source === 'crowd');
   const staticIncidents = update.incidents.filter(i => i.source === 'static');
+  const weatherIncidents = update.incidents.filter(i => i.source === 'weather');
 
   return (
     <div className="flex flex-col gap-4 mb-4">
@@ -65,6 +66,19 @@ export const TrafficUpdatesUI: React.FC<{
               <p className="text-slate-500 text-xs">No hazards or incidents found nearby.</p>
             ) : (
               <>
+                {weatherIncidents.length > 0 && (
+                  <div>
+                    <h5 className="text-[10px] text-cyan-400 uppercase tracking-wider mb-2 flex items-center gap-1"><AlertTriangle size={10}/> Weather Advisories</h5>
+                    <div className="flex flex-col gap-2">
+                      {weatherIncidents.map((inc, i) => (
+                        <div key={i} className="p-2 bg-cyan-900/40 border border-cyan-500/50 text-cyan-100 rounded-xl flex items-center justify-between text-xs">
+                          <span className="font-medium font-bold">{inc.label}</span>
+                          {inc.distKm && <span className="opacity-70 font-mono text-[10px] ml-2">{inc.distKm} km</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {crowdIncidents.length > 0 && (
                   <div>
                     <h5 className="text-[10px] text-blue-400 uppercase tracking-wider mb-2 flex items-center gap-1"><Radio size={10}/> Live Reports</h5>

@@ -13,7 +13,7 @@ import xss from "xss";
 import { IncidentEngine, MemoryIncidentStore, SupabaseMirroredStore, createIncidentRouter, normalizePhone, isSigningSecretConfigured } from "./incidents.js";
 import { createDrivingRouter, MemoryDrivingModeStore, SupabaseMirroredDrivingModeStore } from "./drivingMode.js";
 import { analyzeMedicalConditionAndRecommendHospitals } from "./medical.js";
-import { createTrafficRouter } from "./traffic.js";
+import { createTrafficRouter, getWeatherForLocation } from "./traffic.js";
 import { retrieveContext } from "./rag.js";
 
 dotenv.config();
@@ -305,19 +305,7 @@ import { InMemoryChatMessageHistory } from "@langchain/core/chat_history";
 
 const aiMemory = new InMemoryChatMessageHistory();
 
-let currentWeatherData = "Weather data unavailable.";
-async function updateWeather() {
-  try {
-     const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=12.9716&longitude=77.5946&current=temperature_2m,relative_humidity_2m,precipitation&timezone=Asia%2FKolkata");
-     const data = await res.json();
-     if (data && data.current) {
-        currentWeatherData = `Current temperature is ${data.current.temperature_2m}°C, humidity is ${data.current.relative_humidity_2m}%, precipitation is ${data.current.precipitation}mm.`;
-     }
-  } catch(e) {}
-}
-updateWeather();
-setInterval(updateWeather, 10 * 60 * 1000); // 10 minutes
-
+// Weather is now fetched dynamically per-location via getWeatherForLocation
 let langchainConversation: RunnableWithMessageHistory<any, any> | null = null;
 const getLangchainConversation = () => {
   if (!langchainConversation) {
@@ -440,8 +428,11 @@ app.post("/api/ai/ask", async (req, res) => {
   
   let location_context = "Location not provided by user.";
   let nearest_hospital_context = "Cannot determine nearest hospital without user location.";
-  
+  let weather_info = "Weather data unavailable without location.";
+
   if (location) {
+     const weather = await getWeatherForLocation(location.lat, location.lng);
+     weather_info = weather.summary;
      location_context = `Latitude: ${location.lat}, Longitude: ${location.lng}`;
      if (question.toLowerCase().includes("hospital") || question.toLowerCase().includes("clinic") || question.toLowerCase().includes("navigate") || question.toLowerCase().includes("nearest")) {
        try {
@@ -526,7 +517,7 @@ app.post("/api/ai/ask", async (req, res) => {
             { 
               input: question,
               current_time: new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
-              weather_info: currentWeatherData,
+              weather_info: weather_info,
               location_context,
               nearest_hospital_context,
               medical_context
@@ -552,7 +543,7 @@ app.post("/api/ai/ask", async (req, res) => {
          { 
            input: question,
            current_time: new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
-           weather_info: currentWeatherData,
+           weather_info: weather_info,
            location_context,
            nearest_hospital_context,
            medical_context
@@ -611,7 +602,7 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
                 { 
                   input: question,
                   current_time: new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
-                  weather_info: currentWeatherData,
+                  weather_info: weather_info,
                   location_context,
                   nearest_hospital_context,
                   medical_context
@@ -865,6 +856,16 @@ app.post("/api/ai/voice-agent", async (req, res) => {
        return res.json({ text: "I'm listening." });
     }
 
+    let weather_info = "Weather data unavailable.";
+    if (location && location.lat && location.lng) {
+      try {
+        const weather = await getWeatherForLocation(location.lat, location.lng);
+        weather_info = weather.summary;
+      } catch (e) {
+        console.error("Failed to fetch weather in voice-agent:", e);
+      }
+    }
+
   const executeVoiceAgent = async () => {
     try {
       // Setup Native Gemini Function Calling
@@ -981,7 +982,7 @@ If the user asks a general question, just answer it directly. Only use tools whe
       {
         input: cleanTranscript,
         current_time: new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
-        weather_info: currentWeatherData,
+        weather_info: weather_info,
         location_context: location ? JSON.stringify(location) : "Unknown",
         nearest_hospital_context: "Not provided in this context",
         medical_context
