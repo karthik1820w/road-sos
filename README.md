@@ -87,3 +87,21 @@ The application implements persistent watchdogs to continuously keep background 
 
 ---
 Built with ❤️ for intelligent safety.
+
+### Android Release Build Setup
+To build the Android app for production or testing locally, you must generate a keystore and configure it. Do not commit this keystore to the repository. CI uses a separate, securely-stored release keystore.
+
+1. Generate a keystore:
+   `ash
+   keytool -genkeypair -v -keystore release.keystore -alias your_alias_name -keyalg RSA -keysize 2048 -validity 10000
+   ``n2. Create a file named keystore.properties in the root of the project with the following:
+   `properties
+   storePassword=your_store_password
+   keyPassword=your_key_password
+   keyAlias=your_alias_name
+   storeFile=../release.keystore
+   ``n3. This file and the keystore are automatically ignored by git. Capacitor will now sign your release builds when running ./gradlew assembleRelease.
+
+### CI/CD for Android Release
+The GitHub Action \Android Release Build\ handles building the APK and AAB. It is triggered manually via \workflow_dispatch\ or when pushing a version tag (e.g., \1.0.0\). The \ersionCode\ is automatically derived from the CI \GITHUB_RUN_NUMBER\, ensuring it strictly increases with every build.
+

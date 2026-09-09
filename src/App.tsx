@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { ShieldCheck, PhoneCall, Activity, Zap, Navigation, Gauge, BarChart3, Heart, ClipboardList, FileText, ChevronRight, Info, AlertCircle, Mic, X, Bot, Menu, Settings, Map, GripVertical } from 'lucide-react';
+import { Shield, ShieldCheck, PhoneCall, Activity, Zap, Navigation, Gauge, BarChart3, Heart, ClipboardList, FileText, ChevronRight, Info, AlertCircle, Mic, X, Bot, Menu, Settings, Map, GripVertical } from 'lucide-react';
 import { EmergencyUI } from './components/EmergencyUI';
 import { VoiceInterface } from './components/VoiceInterface';
 import { DispatchSummary } from './components/DispatchSummary';
@@ -9,6 +9,7 @@ import { HazardMonitor } from './components/HazardMonitor';
 import { GoogleMapComponent } from './components/GoogleMapComponent';
 import { InstallAppBanner } from './components/InstallAppBanner';
 import { ChatbotModal } from './components/ChatbotModal';
+import { PrivacyPolicy } from './pages/PrivacyPolicy';
 import { APIProvider } from '@vis.gl/react-google-maps';
 import { ResponsiveContainer, LineChart, Line, YAxis, CartesianGrid } from 'recharts';
 import jsPDF from 'jspdf';
@@ -2243,7 +2244,8 @@ export default function App() {
                         { id: '/medical-profile', label: 'Medical Profile', icon: <Heart size={16} />, color: 'text-rose-400 bg-rose-500/10 hover:bg-rose-500/20' },
                         { id: '/first-aid', label: 'First-Aid Guide', icon: <ClipboardList size={16} />, color: 'text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20' },
                         { id: '/accident-logs', label: 'Accident Logs', icon: <FileText size={16} />, color: 'text-purple-400 bg-purple-500/10 hover:bg-purple-500/20' },
-                        { id: '/settings', label: 'Settings', icon: <Settings size={16} />, color: 'text-slate-400 bg-slate-500/10 hover:bg-slate-500/20' }
+                        { id: '/settings', label: 'Settings', icon: <Settings size={16} />, color: 'text-slate-400 bg-slate-500/10 hover:bg-slate-500/20' },
+                        { id: '/privacy', label: 'Privacy', icon: <Shield size={16} />, color: 'text-slate-400 bg-slate-500/10 hover:bg-slate-500/20' }
                       ].map((item, idx) => (
                         <button
                           key={item.id}
@@ -2924,6 +2926,8 @@ export default function App() {
           </section>
           </>
           )}
+
+          {locationPath === '/privacy' && <PrivacyPolicy onBack={() => window.history.back()} />}
 
           {locationPath === '/settings' && (
           <section id="settings-section" className="bg-slate-900 border border-slate-800 rounded-3xl p-8 mb-8 mt-8">

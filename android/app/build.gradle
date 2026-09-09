@@ -7,7 +7,7 @@ android {
         applicationId "com.roadsos.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
+        versionCode (System.getenv("GITHUB_RUN_NUMBER") ? System.getenv("GITHUB_RUN_NUMBER").toInteger() : 1)
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
@@ -16,10 +16,25 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            def keystorePropertiesFile = rootProject.file("keystore.properties")
+            def keystoreProperties = new Properties()
+            if (keystorePropertiesFile.exists()) {
+                keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+            }
+
+            storeFile = keystorePropertiesFile.exists() ? file(keystoreProperties['storeFile']) : (System.getenv("KEYSTORE_FILE") ? file(System.getenv("KEYSTORE_FILE")) : null)
+            storePassword = keystorePropertiesFile.exists() ? keystoreProperties['storePassword'] : System.getenv("KEYSTORE_PASSWORD")
+            keyAlias = keystorePropertiesFile.exists() ? keystoreProperties['keyAlias'] : System.getenv("KEY_ALIAS")
+            keyPassword = keystorePropertiesFile.exists() ? keystoreProperties['keyPassword'] : System.getenv("KEY_PASSWORD")
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
 }
