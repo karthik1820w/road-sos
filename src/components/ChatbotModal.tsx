@@ -605,6 +605,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
 
         if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
         
+        const waitTime = f ? 400 : 2000;
+        
         if (currentFullText.trim().length > 0) {
           const lowerText = currentFullText.toLowerCase();
           if (lowerText.includes('close chatbot') || lowerText.includes('exit chatbot') || lowerText.includes('close assistant') || lowerText.includes('exit assistant') || lowerText.includes('stop chatbot') || lowerText.includes('stop assistant') || lowerText.includes('close voice assistant') || lowerText.includes('cancel')) {
@@ -616,9 +618,10 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
           silenceTimerRef.current = setTimeout(() => {
             const textToSend = currentFullText.trim();
             if (textToSend) {
+               transcriptBufferRef.current = '';
                handleQuery(textToSend);
             }
-          }, 1500);
+          }, waitTime);
         }
 
         if (chunkFinal) {
@@ -883,18 +886,19 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
       
-      utterance.onend = () => {
-        // Resume listening after speaking
-        setTimeout(() => {
-           startListening();
-        }, 500);
+      let isDone = false;
+      const onDone = () => {
+        if (!isDone && stateRef.current === 'SPEAKING') {
+           isDone = true;
+           setTimeout(() => startListening(), 200);
+        }
       };
+
+      utterance.onend = onDone;
+      utterance.onerror = onDone;
       
-      utterance.onerror = () => {
-        setTimeout(() => {
-           startListening();
-        }, 500);
-      };
+      const approxDurationMs = Math.max(2000, msg.length * 70);
+      setTimeout(onDone, approxDurationMs + 1000);
       
       window.speechSynthesis.speak(utterance);
     }

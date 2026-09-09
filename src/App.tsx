@@ -194,15 +194,44 @@ export default function App() {
     const handleOffline = () => {
         setSystemHealth(s => ({ ...s, network: false }));
     };
+
+    // Feature: Announce Incoming Calls in Driving Mode
+    const handleIncomingCall = (e: any) => {
+      const incomingNumber = e.detail?.number;
+      if (!incomingNumber) return;
+
+      if (isDrivingModeRef.current) {
+         const contacts = medicalInfoRef.current?.emergencyContacts || [];
+         // Strip non-digits for comparison
+         const cleanIncoming = incomingNumber.replace(/\D/g, '');
+         const knownContact = contacts.find((c: any) => {
+           const cleanSaved = c.number.replace(/\D/g, '');
+           return cleanSaved && (cleanIncoming.includes(cleanSaved) || cleanSaved.includes(cleanIncoming));
+         });
+         
+         if (knownContact) {
+            speakNotification(`Incoming call from ${knownContact.label}.`);
+         } else {
+            speakNotification("Incoming call from unknown number.");
+         }
+      }
+    };
+    
+    // Expose a global helper to easily test this in realtime
+    (window as any).simulateIncomingCall = (number: string) => {
+       window.dispatchEvent(new CustomEvent('incoming-call', { detail: { number } }));
+    };
     
     window.addEventListener('health-mic-active', handleMicState);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    window.addEventListener('incoming-call', handleIncomingCall);
     
     return () => {
       window.removeEventListener('health-mic-active', handleMicState);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('incoming-call', handleIncomingCall);
     };
   }, []);
   const [logs, setLogs] = useState<any[]>(() => {
@@ -339,6 +368,11 @@ export default function App() {
     console.log(`[DrivingMode] Safety auto-disable triggered: ${reason}`);
     setIsDrivingMode(false);
     isDrivingModeRef.current = false;
+    
+    // Save trip with emergency type
+    await finalizeCurrentTrip('emergency');
+    backgroundService.disable();
+    
     speakNotification("Driving mode disabled — emergency response active.");
 
     try {
@@ -406,20 +440,13 @@ export default function App() {
         vehicleClass,
       });
       speakNotification(`Driving Mode Engaged. ${vehicleClass.replace('_', ' ').toLowerCase()} profile active.`);
+      backgroundService.enable();
     } catch (e) {
       console.error('Failed to sync driving status:', e);
     }
   };
 
-  const toggleDrivingMode = async () => {
-    if (!isDrivingModeRef.current) {
-      setShowVehiclePicker(true);
-      return;
-    }
-
-    const newState = false;
-    setIsDrivingMode(newState);
-    
+  const finalizeCurrentTrip = async (tripType: 'safe' | 'emergency') => {
     const loc = userLocationRef.current;
     
     // Trip Logging
@@ -466,7 +493,7 @@ export default function App() {
       const newTrip = {
         id: Date.now().toString(),
         date: new Date().toLocaleDateString(),
-        type: 'safe',
+        type: tripType,
         start: curTrip.address,
         end: endAddress,
         duration: `${mins} min`,
@@ -477,10 +504,23 @@ export default function App() {
       setTrips(prev => [newTrip, ...prev]);
       setCurrentTripStart(null);
     }
+  };
+
+  const toggleDrivingMode = async () => {
+    if (!isDrivingModeRef.current) {
+      setShowVehiclePicker(true);
+      return;
+    }
+
+    const newState = false;
+    setIsDrivingMode(newState);
+    
+    await finalizeCurrentTrip('safe');
 
     try {
       await executeWithOfflineFallback('/api/status/driving', 'POST', { active: false, phone: userPhone, name: medicalInfo.name, vehicleClass: selectedVehicleClass });
       speakNotification('Driving Mode Disabled.');
+      backgroundService.disable();
     } catch (e) {
       console.error('Failed to sync driving status:', e);
     }
@@ -844,7 +884,7 @@ export default function App() {
       sensorSummary: opts.verdict ? summarizeVerdict(opts.verdict) : undefined,
       patient: { name: mInfo.name, phone: userPhoneRef.current || undefined, bloodGroup: mInfo.bloodGroup, allergies: mInfo.allergies, conditions: mInfo.conditions },
       contacts,
-    });
+    }, { allowNativeFallback: false });
 
     setLastDispatch(outcome);
     if (outcome.incident) {
@@ -867,10 +907,10 @@ export default function App() {
     }
 
     if (!opts.silent) {
-      if (outcome.error === 'OFFLINE') speakNotification("You are offline. I opened your messages app with the alert. Send it, then call one one two.");
-      else if (outcome.summary?.allFailed) speakNotification(`Automatic alerts failed. Reason: ${outcome.error}. I opened your messages app so you can send the alert yourself.`);
+      if (outcome.error === 'OFFLINE') speakNotification("You are offline. The alert is queued and will send automatically when connection returns. Please manually dial one one two if possible.");
+      else if (outcome.summary?.allFailed) speakNotification(`Automatic alerts failed to deliver. Reason: ${outcome.error}. Please manually dial emergency services if you can.`);
       else if (outcome.error) speakNotification(`Alert issue: ${outcome.error}`);
-      else if (outcome.summary && outcome.summary.sent > 0) speakNotification(`Alert sent to ${outcome.summary.sent} channel${outcome.summary.sent === 1 ? '' : 's'}. Waiting for a contact to confirm.`);
+      else if (outcome.summary && outcome.summary.sent > 0) speakNotification(`Alert successfully sent to ${outcome.summary.sent} channel${outcome.summary.sent === 1 ? '' : 's'}. Waiting for a contact to confirm.`);
       if (!outcome.error) { setIsEmergency(false); setInitialVoiceState('DISPATCH_PENDING'); setIsVoiceActive(true); }
     }
 

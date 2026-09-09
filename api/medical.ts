@@ -8,6 +8,8 @@ export interface AiMedicalAnalysis {
   severity: "CRITICAL" | "HIGH" | "MODERATE" | "MILD";
   possibleDiseasesOrInjuries: string[];
   firstAidInstructions: string[];
+  followUpQuestions?: string[];
+  vitalSignAlerts?: string[];
   specialtiesNeeded: string[];
   triageSummary: string;
   confidence?: number;
@@ -171,6 +173,8 @@ export function getLocalClinicalFallback(
         "Monitor breathing and pulse continuously; begin CPR immediately if unresponsive.",
         "Keep patient calm and avoid any physical exertion.",
       ],
+      followUpQuestions: ["Is the chest pain radiating to the arm or jaw?", "Are they experiencing shortness of breath or sweating?"],
+      vitalSignAlerts: ["Monitor for sudden drop in pulse", "Watch for loss of consciousness"],
       specialtiesNeeded: ["Cardiology", "Cath Lab", "Cardiac ICU", "Emergency Medicine"],
       triageSummary: "Urgent suspected cardiac distress. Immediate ECG, oxygenation, and cardiology team readiness required.",
     };
@@ -187,6 +191,8 @@ export function getLocalClinicalFallback(
         "Assist patient with their prescribed inhaler if conscious and available.",
         "Reassure the patient and do not crowd around them.",
       ],
+      followUpQuestions: ["Do they have a history of asthma or allergies?", "Are their lips or face turning blue?"],
+      vitalSignAlerts: ["Watch for severe wheezing or silence (no air movement)", "Monitor for cyanosis (bluish tint)"],
       specialtiesNeeded: ["Pulmonology", "Respiratory ICU", "Emergency Medicine"],
       triageSummary: "Severe respiratory distress with airway vulnerability. Immediate nebulization and oxygen therapy needed.",
     };
@@ -203,6 +209,8 @@ export function getLocalClinicalFallback(
         "Keep patient warm with a jacket/blanket to prevent hypothermic shock.",
         "Continuously monitor airway and responsiveness until paramedics arrive.",
       ],
+      followUpQuestions: ["Is there any active severe bleeding?", "Is the patient conscious and responding to your voice?"],
+      vitalSignAlerts: ["Monitor for unequal pupil size", "Watch for clear fluid from ears or nose"],
       specialtiesNeeded: ["Level-1 Trauma Care", "Orthopedic Surgery", "Neurosurgery", "Blood Transfusion Unit"],
       triageSummary: `High-energy road impact (${peakG > 0 ? `${peakG.toFixed(1)}G` : "severe impact"}). Surgical trauma triage and radiological imaging required upon arrival.`,
     };
@@ -218,6 +226,8 @@ export function getLocalClinicalFallback(
       "Place patient in recovery position if unconscious but breathing normally.",
       "Comfort the patient and stay on the line with emergency services.",
     ],
+    followUpQuestions: ["Can you describe exactly where they are hurt?", "Are they awake and able to talk to you?"],
+    vitalSignAlerts: ["Monitor overall responsiveness and breathing rate"],
     specialtiesNeeded: ["24/7 Emergency Medicine", "Intensive Care Unit", "General Surgery"],
     triageSummary: "Emergency distress triggered by user voice activation. Full clinical vitals assessment and stabilization needed.",
   };
@@ -288,6 +298,14 @@ You MUST respond strictly in valid JSON format with NO markdown code blocks (no 
     "Clear actionable step 2",
     "Clear actionable step 3"
   ],
+  "followUpQuestions": [
+    "What to ask the patient to narrow down the triage? (e.g. 'Is the bleeding spurting or steady?')",
+    "Are they experiencing numbness or tingling?"
+  ],
+  "vitalSignAlerts": [
+    "Watch out for sudden drop in heart rate",
+    "Check for pale or bluish skin"
+  ],
   "specialtiesNeeded": ["Trauma ICU", "Specialty 2"],
   "triageSummary": "Short 1-2 sentence clinical summary for hospital triage team",
   "recommendedHospitalName": "Exact name of best recommended hospital from the list",
@@ -324,6 +342,8 @@ You MUST respond strictly in valid JSON format with NO markdown code blocks (no 
         severity: (["CRITICAL", "HIGH", "MODERATE", "MILD"].includes(parsed.severity) ? parsed.severity : "HIGH") as any,
         possibleDiseasesOrInjuries: Array.isArray(parsed.possibleDiseasesOrInjuries) ? parsed.possibleDiseasesOrInjuries : [],
         firstAidInstructions: instructions,
+        followUpQuestions: Array.isArray(parsed.followUpQuestions) ? parsed.followUpQuestions : [],
+        vitalSignAlerts: Array.isArray(parsed.vitalSignAlerts) ? parsed.vitalSignAlerts : [],
         specialtiesNeeded: Array.isArray(parsed.specialtiesNeeded) ? parsed.specialtiesNeeded : [],
         triageSummary: parsed.triageSummary || "Emergency triage initiated. Immediate vitals assessment recommended.",
         confidence,

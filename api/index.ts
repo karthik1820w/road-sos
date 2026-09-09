@@ -14,6 +14,7 @@ import { IncidentEngine, MemoryIncidentStore, SupabaseMirroredStore, createIncid
 import { createDrivingRouter, MemoryDrivingModeStore, SupabaseMirroredDrivingModeStore } from "./drivingMode.js";
 import { analyzeMedicalConditionAndRecommendHospitals } from "./medical.js";
 import { createTrafficRouter } from "./traffic.js";
+import { retrieveContext } from "./rag.js";
 
 dotenv.config();
 
@@ -346,7 +347,8 @@ IMPORTANT SYSTEM CONTEXT:
 - Current Weather Information: {weather_info}
 - User Location context: {location_context}
 - Nearest Hospital context: {nearest_hospital_context}
-Use this context to accurately answer questions about the current time, weather, current location, or navigating to the nearest hospital. If the user asks for their current location, tell them their latitude and longitude based on the context. If they ask for route navigation or the nearest hospital, explicitly use the Nearest Hospital context (which integrates with existing Places API functions) to tell them the hospital name and that route navigation is available.
+- Medical Knowledge Base Context: {medical_context}
+Use this context to accurately answer questions about the current time, weather, current location, navigating to the nearest hospital, or providing first aid instructions based strictly on the Medical Knowledge Base Context if available. If the user asks for their current location, tell them their latitude and longitude based on the context. If they ask for route navigation or the nearest hospital, explicitly use the Nearest Hospital context (which integrates with existing Places API functions) to tell them the hospital name and that route navigation is available. If providing medical advice, ground it solely in the provided Medical Knowledge Base Context.
 
 Because your output is fed directly into a Text-to-Speech engine, you MUST strictly adhere to the following voice-first rules:
 
@@ -499,6 +501,19 @@ app.post("/api/ai/ask", async (req, res) => {
       return res.json({ answer: trainedAns });
     }
 
+    const isMedicalQuery = question.toLowerCase().match(/(first aid|hurt|bleed|pain|accident|crash|headache|broken|medical|emergency)/);
+    let medical_context = "No medical context provided.";
+    if (isMedicalQuery) {
+      try {
+        const results = await retrieveContext(question, 'medical');
+        if (results.length > 0) {
+          medical_context = results.map((r: any) => r.content).join("\n");
+        }
+      } catch (e) {
+        console.error("Failed to retrieve medical context:", e);
+      }
+    }
+
     let chain = getLangchainConversation();
     
     if (stream) {
@@ -513,7 +528,8 @@ app.post("/api/ai/ask", async (req, res) => {
               current_time: new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
               weather_info: currentWeatherData,
               location_context,
-              nearest_hospital_context
+              nearest_hospital_context,
+              medical_context
             },
             { configurable: { sessionId: "default" } }
           );
@@ -538,7 +554,8 @@ app.post("/api/ai/ask", async (req, res) => {
            current_time: new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
            weather_info: currentWeatherData,
            location_context,
-           nearest_hospital_context
+           nearest_hospital_context,
+           medical_context
          },
          { configurable: { sessionId: "default" } }
        );
@@ -566,7 +583,8 @@ IMPORTANT SYSTEM CONTEXT:
 - Current Weather Information: {weather_info}
 - User Location context: {location_context}
 - Nearest Hospital context: {nearest_hospital_context}
-Use this context to accurately answer questions about the current time, weather, current location, or navigating to the nearest hospital. If the user asks for their current location, tell them their latitude and longitude based on the context. If they ask for route navigation or the nearest hospital, explicitly use the Nearest Hospital context (which integrates with existing Places API functions) to tell them the hospital name and that route navigation is available.
+- Medical Knowledge Base Context: {medical_context}
+Use this context to accurately answer questions about the current time, weather, current location, navigating to the nearest hospital, or providing first aid instructions based strictly on the Medical Knowledge Base Context if available. If the user asks for their current location, tell them their latitude and longitude based on the context. If they ask for route navigation or the nearest hospital, explicitly use the Nearest Hospital context (which integrates with existing Places API functions) to tell them the hospital name and that route navigation is available. If providing medical advice, ground it solely in the provided Medical Knowledge Base Context.
 
 Because your output is fed directly into a Text-to-Speech engine, you MUST strictly adhere to the following voice-first rules:
 
@@ -595,7 +613,8 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
                   current_time: new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
                   weather_info: currentWeatherData,
                   location_context,
-                  nearest_hospital_context
+                  nearest_hospital_context,
+                  medical_context
                 },
                 { configurable: { sessionId: "default" } }
              );
@@ -943,6 +962,19 @@ If the user asks a general question, just answer it directly. Only use tools whe
       return res.json({ toolCall: { name: calls[0].name, args: calls[0].args }, text: "Executing command." });
     }
 
+    const isMedicalQuery = cleanTranscript.toLowerCase().match(/(first aid|hurt|bleed|pain|accident|crash|headache|broken|medical|emergency)/);
+    let medical_context = "No medical context provided.";
+    if (isMedicalQuery) {
+      try {
+        const results = await retrieveContext(cleanTranscript, 'medical');
+        if (results.length > 0) {
+          medical_context = results.map((r: any) => r.content).join("\n");
+        }
+      } catch (e) {
+        console.error("Failed to retrieve medical context in voice-agent:", e);
+      }
+    }
+
     // Connect using LangChain to answer the user's question (Weather, Time, General Knowledge)
     const chain = getLangchainConversation();
     const lcResponse = await chain.invoke(
@@ -951,7 +983,8 @@ If the user asks a general question, just answer it directly. Only use tools whe
         current_time: new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
         weather_info: currentWeatherData,
         location_context: location ? JSON.stringify(location) : "Unknown",
-        nearest_hospital_context: "Not provided in this context"
+        nearest_hospital_context: "Not provided in this context",
+        medical_context
       },
       { configurable: { sessionId: "voice-agent" } }
     );

@@ -119,6 +119,12 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
       utterance.onstart = () => { isSpeakingRef.current = true; };
       utterance.onend = () => { isSpeakingRef.current = false; };
       utterance.onerror = () => { isSpeakingRef.current = false; };
+      
+      const approxDurationMs = Math.max(2000, msg.length * 70);
+      setTimeout(() => {
+        isSpeakingRef.current = false;
+      }, approxDurationMs + 1000);
+
       window.speechSynthesis.speak(utterance);
     }
   };
@@ -178,6 +184,8 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
 
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
           
+          const waitTime = f ? 400 : 2000;
+          
           if (currentFullText.trim().length > 0) {
             silenceTimerRef.current = setTimeout(() => {
               console.log("[VOICE DEBUG] Silence Detected - Sending to Gemini");
@@ -185,9 +193,10 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
               console.log(`[VOICE DEBUG] Final Transcription: "${textToSend}"`);
               
               if (textToSend && processVoiceRef.current) {
+                 transcriptBufferRef.current = '';
                  processVoiceRef.current(textToSend);
               }
-            }, 700);
+            }, waitTime);
           }
 
           if (chunkFinal) {
