@@ -389,6 +389,8 @@ export default function App() {
       time: Date.now(),
       location: loc,
       address: startAddress,
+      vehicleType: vehicleClass,
+      route: loc ? [loc] : []
     });
 
     try {
@@ -428,8 +430,22 @@ export default function App() {
       const durationMs = Date.now() - curTrip.time;
       const mins = Math.floor(durationMs / 60000);
       
-      let distanceStr = 'Tracking...';
-      if (curTrip.location && loc) {
+      let distanceStr = '0.0 km';
+      if (curTrip.route && curTrip.route.length > 1) {
+        let totalDist = 0;
+        const R = 6371;
+        for (let i=1; i < curTrip.route.length; i++) {
+          const p1 = curTrip.route[i-1];
+          const p2 = curTrip.route[i];
+          const dLat = (p2.lat - p1.lat) * Math.PI / 180;
+          const dLon = (p2.lng - p1.lng) * Math.PI / 180;
+          const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                    Math.cos(p1.lat * Math.PI / 180) * Math.cos(p2.lat * Math.PI / 180) * 
+                    Math.sin(dLon/2) * Math.sin(dLon/2);
+          totalDist += R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+        }
+        distanceStr = `${totalDist.toFixed(1)} km`;
+      } else if (curTrip.location && loc) {
         const R = 6371;
         const dLat = (loc.lat - curTrip.location.lat) * Math.PI / 180;
         const dLon = (loc.lng - curTrip.location.lng) * Math.PI / 180;
@@ -450,6 +466,8 @@ export default function App() {
         end: endAddress,
         duration: `${mins} min`,
         distance: distanceStr,
+        vehicleType: curTrip.vehicleType || 'unknown',
+        route: curTrip.route || []
       };
       setTrips(prev => [newTrip, ...prev]);
       setCurrentTripStart(null);
@@ -1723,6 +1741,18 @@ export default function App() {
       let lastIncidentLocTime = 0;
       watchId = await hardwareService.watchLocation((lat, lng, speedMps, accuracyM) => {
         setUserLocation({ lat, lng });
+        
+        if (isDrivingModeRef.current && currentTripStartRef.current) {
+          const curRoute = currentTripStartRef.current.route || [];
+          const now = Date.now();
+          if (now - (currentTripStartRef.current.lastRouteUpdate || 0) > 5000) {
+            curRoute.push({ lat, lng });
+            currentTripStartRef.current.route = curRoute;
+            currentTripStartRef.current.lastRouteUpdate = now;
+            localStorage.setItem('roadsos_current_trip', JSON.stringify(currentTripStartRef.current));
+          }
+        }
+
         if (speedMps !== null && speedMps !== undefined && speedMps >= 0) {
           crashDetectorRef.current.pushSpeed({ t: Date.now(), speedMps, accuracyM });
 
@@ -1854,7 +1884,7 @@ export default function App() {
        
        // Acquire and hold mic track to prevent SpeechRecognition beeps on Android
        // and keep the mic pipeline warm as a mobile feature.
-       navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+       navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(stream => {
            (window as any)._heldAudioStream = stream; // Keep a strong reference
        }).catch(err => console.log("Failed to hold mic stream:", err));
     }

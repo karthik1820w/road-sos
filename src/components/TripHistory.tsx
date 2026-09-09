@@ -2,8 +2,15 @@ import React, { useState } from 'react';
 import { Map, Clock, Navigation, MapPin } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
+import { GoogleMapComponent } from './GoogleMapComponent';
+
 export default function TripHistory({ trips = [], currentTripStart = null, userLocation = null }: { trips?: any[], currentTripStart?: any, userLocation?: any }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [activeTripId, setActiveTripId] = useState<string | null>(null);
+
+  const toggleTrip = (tripId: string) => {
+    setActiveTripId(prev => prev === tripId ? null : tripId);
+  };
 
   return (
     <section id="trip-history-section" className="mb-8 w-full max-w-full">
@@ -36,7 +43,7 @@ export default function TripHistory({ trips = [], currentTripStart = null, userL
             >
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-2">
                 {currentTripStart && (
-                  <div className="p-4 bg-indigo-950/50 border border-indigo-500/50 rounded-2xl flex flex-col gap-3 transition-transform hover:-translate-y-1 relative overflow-hidden text-left">
+                  <div className="p-4 bg-indigo-950/50 border border-indigo-500/50 rounded-2xl flex flex-col gap-3 relative overflow-hidden text-left">
                     <div className="absolute top-0 right-0 p-2 opacity-20 pointer-events-none">
                       <Navigation size={48} className="animate-pulse" />
                     </div>
@@ -54,15 +61,19 @@ export default function TripHistory({ trips = [], currentTripStart = null, userL
                       </div>
                       <div className="flex items-center gap-2">
                         <Navigation size={14} className="text-blue-400 rotate-90 shrink-0" />
-                        <span className="text-sm font-bold text-blue-200 truncate animate-pulse tracking-widest">Driving...</span>
+                        <span className="text-sm font-bold text-blue-200 truncate animate-pulse tracking-widest">Driving... ({currentTripStart.vehicleType || 'Vehicle'})</span>
                       </div>
                     </div>
                   </div>
                 )}
                 {(trips.length > 0 || currentTripStart) ? trips.map(trip => (
-                  <div key={trip.id} className="p-4 bg-slate-950/50 border border-slate-800 rounded-2xl flex flex-col gap-3 transition-transform hover:-translate-y-1 text-left">
+                  <div 
+                    key={trip.id} 
+                    onClick={() => toggleTrip(trip.id)}
+                    className="p-4 bg-slate-950/50 border border-slate-800 rounded-2xl flex flex-col gap-3 transition-transform hover:-translate-y-1 text-left cursor-pointer md:col-span-3"
+                  >
                     <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-mono text-slate-400">{trip.date}</span>
+                      <span className="text-[11px] font-mono text-slate-400">{trip.date} • {trip.vehicleType ? trip.vehicleType.replace('_', ' ').toUpperCase() : 'VEHICLE'}</span>
                       <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full ${trip.type === 'safe' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500'}`}>
                         {trip.type === 'safe' ? 'Safe Arrival' : 'Alert Triggered'}
                       </span>
@@ -91,6 +102,23 @@ export default function TripHistory({ trips = [], currentTripStart = null, userL
                         <span className="text-xs font-mono">{trip.distance}</span>
                       </div>
                     </div>
+                    
+                    <AnimatePresence>
+                      {activeTripId === trip.id && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="w-full mt-4 h-64 rounded-xl overflow-hidden border border-slate-800 relative"
+                        >
+                          <GoogleMapComponent 
+                            center={trip.route && trip.route.length > 0 ? trip.route[Math.floor(trip.route.length/2)] : userLocation || {lat: 0, lng: 0}}
+                            zoom={13}
+                            routePath={trip.route}
+                          />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                 )) : (
                   <div className="col-span-1 md:col-span-3 text-center py-8">

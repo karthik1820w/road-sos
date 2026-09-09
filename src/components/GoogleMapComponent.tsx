@@ -11,6 +11,7 @@ interface GoogleMapsViewProps {
   showTrafficLayer?: boolean;
   voiceMapQuery?: string;
   hasValidKey?: boolean;
+  routePath?: Array<{ lat: number; lng: number }>;
 }
 
 const classifyHospitalType = (hospitalName: string): 'GOVERNMENT' | 'PRIVATE' => {
@@ -29,7 +30,7 @@ const classifyHospitalType = (hospitalName: string): 'GOVERNMENT' | 'PRIVATE' =>
   return 'PRIVATE';
 };
 
-const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers = [], showTrafficLayer = false, voiceMapQuery, hasValidKey: hasValidKeyProp }) => {
+const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers = [], showTrafficLayer = false, voiceMapQuery, hasValidKey: hasValidKeyProp, routePath }) => {
   const map = useMap();
   const routesLibrary = useMapsLibrary('routes');
   
@@ -53,6 +54,21 @@ const MapContent: React.FC<GoogleMapsViewProps> = ({ center, zoom = 13, markers 
   useEffect(() => {
     setLocalShowTraffic(showTrafficLayer);
   }, [showTrafficLayer]);
+
+  useEffect(() => {
+    if (!map || !routePath || routePath.length === 0) return;
+    const pathLine = new google.maps.Polyline({
+      path: routePath,
+      geodesic: true,
+      strokeColor: '#3b82f6',
+      strokeOpacity: 0.8,
+      strokeWeight: 4,
+      map: map
+    });
+    return () => {
+      pathLine.setMap(null);
+    };
+  }, [map, routePath]);
 
   useEffect(() => {
     if (!map) return;
