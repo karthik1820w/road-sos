@@ -31,8 +31,8 @@ export function useDrivingMode(
   const forceDrivingModeOff = async (reason: string) => {
     if (!isDrivingMode) return;
     setIsDrivingMode(false);
-    saveLogEntry(Driving mode forced off: \, userLocation);
-    
+    saveLogEntry(`Driving mode forced off: ${reason}`, userLocation);
+
     try {
       const p = medicalInfo?.phone?.replace(/[^\d+]/g, '');
       if (p) {
