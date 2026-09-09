@@ -68,4 +68,20 @@ describe('incident report-token signing secret', () => {
 
     expect(signReportToken('xyz')).toBe(expected);
   });
+
+  it('isSigningSecretConfigured returns true if INCIDENT_SIGNING_SECRET or JWT_SECRET is set', async () => {
+    const { isSigningSecretConfigured } = await import('../api/incidents.js');
+    
+    // Initially false (cleared in beforeEach)
+    expect(isSigningSecretConfigured()).toBe(false);
+
+    // True with INCIDENT_SIGNING_SECRET
+    process.env.INCIDENT_SIGNING_SECRET = 'secret';
+    expect(isSigningSecretConfigured()).toBe(true);
+
+    // True with JWT_SECRET
+    delete process.env.INCIDENT_SIGNING_SECRET;
+    process.env.JWT_SECRET = 'jwt';
+    expect(isSigningSecretConfigured()).toBe(true);
+  });
 });

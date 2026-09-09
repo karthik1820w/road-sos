@@ -26,6 +26,23 @@ interface RAGResponse {
   }>;
 }
 
+export const FAINT_CONFIRMATION_THRESHOLD = 2; // Require 2 faint triggers or explicit confirmation
+
+export const isFaintTrigger = (text: string) => text.includes('faint');
+export const isInjuryTrigger = (text: string) => {
+  return ['injur', 'hurt', 'wound', 'bleed', 'pain', 'broken', 'scratch', 'headache', 'fracture', 'swell']
+    .some(keyword => text.includes(keyword));
+};
+export const isAmbulanceTrigger = (text: string) => {
+  // Explicit "call ambulance" is a high-intent command, kept immediate to avoid delaying critical care
+  return ['call ambulance', 'ambulance', 'dispatch help', 'send ambulance']
+    .some(keyword => text.includes(keyword));
+};
+export const isConfirmationTrigger = (text: string) => {
+  return ['yes', 'yeah', 'please', 'do it', 'confirm', 'help me']
+    .some(keyword => text.includes(keyword));
+};
+
 export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, onBack, onDispatchComplete, initialEmergencyState = 'NORMAL', onLogEvent, activeIncident }) => {
   const [state, setState] = useState<'IDLE' | 'RECORDING' | 'PROCESSING' | 'RESULT'>(
     (initialEmergencyState === 'HEARD_HELP' || initialEmergencyState === 'DISPATCH_PENDING') ? 'RESULT' : 'IDLE'
@@ -39,10 +56,10 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
   const [countdown, setCountdown] = useState<number | null>(null);
   const recognitionRef = useRef<any>(null);
   const helpCountRef = useRef<number>(0);
-  const helpResetTimeoutRef = useRef<any>(null);
-  const neonCountRef = useRef<number>(0);
-  const neonResetTimeoutRef = useRef<any>(null);
+  const helpResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSpeakingRef = useRef<boolean>(false);
+  const faintCountRef = useRef<number>(0);
+  const pendingInjuryTextRef = useRef<string | null>(null);
 
   // Conversational state machine overrides
   const [emergencyState, setEmergencyState] = useState<'NORMAL' | 'HEARD_HELP' | 'FIRST_AID_ACTIVE' | 'DISPATCH_PENDING' | 'HELP_ARRIVING'>(initialEmergencyState);
@@ -173,7 +190,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
             if (textToSend && processVoiceRef.current) {
                processVoiceRef.current(textToSend);
             }
-          }, 1500);
+          }, 700);
         }
 
         if (chunkFinal) {
@@ -361,94 +378,100 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
       return;
     }
 
-    // Detect "neon" spoken 3 times (either within this single utterance or cumulatively)
-    const currentNeonMatches = (textLower.match(/\b(neon|neone|neoon|neo)\b/gi) || []).length;
-    if (currentNeonMatches > 0) {
-      if (onLogEvent) {
-        onLogEvent(`Emergency word NEON is called (${currentNeonMatches} time${currentNeonMatches > 1 ? 's' : ''} detected in Voice Module)`);
-      }
-      neonCountRef.current += currentNeonMatches;
-      console.log(`[Voice Component] Heard NEON keyword. Current cumulative matches: ${neonCountRef.current}/3`);
-      if (neonResetTimeoutRef.current) clearTimeout(neonResetTimeoutRef.current);
-      neonResetTimeoutRef.current = setTimeout(() => {
-        neonCountRef.current = 0;
-        console.log(`[Voice Component] Cumulative NEON count reset due to inactivity`);
-      }, 15000);
+    // NOTE: Safety-word detection (previously hardcoded to "neon" here) has been removed.
+    // Safety-word matching is handled exclusively by App.tsx via SafetyWordMatcher, which
+    // respects the user-configured word. Having a second, hardcoded matcher here was a
+    // correctness bug: changing the safety word in settings didn't affect this code path.
+
+    // Challenge: Detect "faint" (requires 2x repetition or confirmation)
+    if (faintCountRef.current > 0 && isConfirmationTrigger(textLower) && emergencyState !== 'DISPATCH_PENDING') {
+      faintCountRef.current = 2; // satisfy threshold
+    }
+    
+    if (isFaintTrigger(textLower) && emergencyState !== 'DISPATCH_PENDING') {
+      faintCountRef.current += 1;
     }
 
-    if ((neonCountRef.current >= 3 || textLower.includes("neon neon neon") || textLower.includes("neon, neon, neon")) && emergencyState === 'NORMAL') {
-      setEmergencyState('DISPATCH_PENDING');
-      speak("Initiating secret safety word protocol. Dispatching calls and SMS alerts to configured emergency numbers.");
-      setTranscript("NEON! NEON! NEON!");
-      setState('RESULT');
-      neonCountRef.current = 0;
-      if (neonResetTimeoutRef.current) clearTimeout(neonResetTimeoutRef.current);
-      triggerEmergencyDispatch("Safety Word (NEON x3) Activation");
-      return;
-    }
-
-    // Challenge: Detect "faint"
-    const isFaint = textLower.includes('faint');
-    if (isFaint && emergencyState !== 'DISPATCH_PENDING') {
-      setEmergencyState('DISPATCH_PENDING');
-      setState('RESULT');
-      
-      // Play a strong alarm
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const oscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
-      
-      oscillator.type = 'square';
-      oscillator.frequency.setValueAtTime(800, audioCtx.currentTime);
-      oscillator.frequency.setValueAtTime(1200, audioCtx.currentTime + 0.5);
-      oscillator.frequency.setValueAtTime(800, audioCtx.currentTime + 1.0);
-      
-      gainNode.gain.setValueAtTime(1, audioCtx.currentTime); // High volume
-      
-      oscillator.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-      
-      oscillator.start();
-      oscillator.stop(audioCtx.currentTime + 2); // 2 second burst
-
-      speak("Medical alert. User is fainting. Initiating distress call to family members.");
-      setTranscript("About to faint...");
-      
-      await triggerEmergencyDispatch("User reported they are about to faint. Immediate assistance required.");
-      return;
-    }
-
-    // Challenge 2: Detect "injured" / "injury"
-    const isInjury = textLower.includes('injur') || textLower.includes('hurt') || textLower.includes('wound') || textLower.includes('bleed') || textLower.includes('pain') || textLower.includes('broken') || textLower.includes('scratch') || textLower.includes('headache') || textLower.includes('fracture') || textLower.includes('swell');
-    if (isInjury && (emergencyState === 'HEARD_HELP' || emergencyState === 'NORMAL')) {
-      setEmergencyState('FIRST_AID_ACTIVE');
-      setLastIncident(text);
-      setState('PROCESSING');
-
-      try {
-        const response = await fetch('/api/ai/ask', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            question: `EMERGENCY FIRST AID REQUEST: The user has sustained an injury. Context transcript: "${text}". Provide immediate, step-by-step first-aid advice under 40 words. Use exact remedies.`
-          })
-        });
-        const data = await response.json();
-        setRemedyText(data.answer);
+    if (faintCountRef.current > 0 && emergencyState !== 'DISPATCH_PENDING') {
+      if (faintCountRef.current >= FAINT_CONFIRMATION_THRESHOLD) {
+        faintCountRef.current = 0;
+        setEmergencyState('DISPATCH_PENDING');
         setState('RESULT');
-        speak(`First aid feature activated. ${data.answer}. If you require an ambulance, please say "call ambulance".`);
-      } catch (err) {
-        const fallbackMsg = "Keep the limb steady, wash off wounds, apply firm pressure, elevate, and keep warm.";
-        setRemedyText(fallbackMsg);
-        setState('RESULT');
-        speak(`First aid feature activated. ${fallbackMsg}. If you require an ambulance, please say "call ambulance".`);
+        
+        // Play a strong alarm
+        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        
+        oscillator.type = 'square';
+        oscillator.frequency.setValueAtTime(800, audioCtx.currentTime);
+        oscillator.frequency.setValueAtTime(1200, audioCtx.currentTime + 0.5);
+        oscillator.frequency.setValueAtTime(800, audioCtx.currentTime + 1.0);
+        
+        gainNode.gain.setValueAtTime(1, audioCtx.currentTime); // High volume
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        
+        oscillator.start();
+        oscillator.stop(audioCtx.currentTime + 2); // 2 second burst
+
+        speak("Medical alert. User is fainting. Initiating distress call to family members.");
+        setTranscript("About to faint...");
+        
+        await triggerEmergencyDispatch("User reported they are about to faint. Immediate assistance required.");
+        return;
+      } else {
+        speak("Did you say you are going to faint? Please say yes to confirm or repeat faint.");
+        return;
       }
+    }
+
+    // Challenge 2: Detect "injured" / "injury" (requires confirmation)
+    if (pendingInjuryTextRef.current && (emergencyState === 'HEARD_HELP' || emergencyState === 'NORMAL')) {
+      if (isConfirmationTrigger(textLower)) {
+        const confirmedText = pendingInjuryTextRef.current;
+        pendingInjuryTextRef.current = null;
+        
+        setEmergencyState('FIRST_AID_ACTIVE');
+        setLastIncident(confirmedText);
+        setState('PROCESSING');
+
+        try {
+          const response = await fetch('/api/ai/ask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              question: `EMERGENCY FIRST AID REQUEST: The user has sustained an injury. Context transcript: "${confirmedText}". Provide immediate, step-by-step first-aid advice under 40 words. Use exact remedies.`
+            })
+          });
+          const data = await response.json();
+          setRemedyText(data.answer);
+          setState('RESULT');
+          speak(`First aid feature activated. ${data.answer}. If you require an ambulance, please say "call ambulance".`);
+        } catch (err) {
+          const fallbackMsg = "Keep the limb steady, wash off wounds, apply firm pressure, elevate, and keep warm.";
+          setRemedyText(fallbackMsg);
+          setState('RESULT');
+          speak(`First aid feature activated. ${fallbackMsg}. If you require an ambulance, please say "call ambulance".`);
+        }
+        return;
+      } else {
+        pendingInjuryTextRef.current = null;
+        speak("Okay, cancelling injury protocol.");
+        // Continue processing this new utterance
+      }
+    }
+
+    if (isInjuryTrigger(textLower) && (emergencyState === 'HEARD_HELP' || emergencyState === 'NORMAL')) {
+      pendingInjuryTextRef.current = text;
+      speak("I heard an injury keyword. Do you need first aid advice? Say yes to confirm.");
       return;
     }
 
     // Challenge 3: Detect "call ambulance"
-    const isCallAmbulance = textLower.includes('call ambulance') || textLower.includes('ambulance') || textLower.includes('dispatch help') || textLower.includes('send ambulance');
-    if (isCallAmbulance && emergencyState !== 'DISPATCH_PENDING' && emergencyState !== 'HELP_ARRIVING') {
+    // (Explicit commands remain immediate to avoid delaying critical care)
+    if (isAmbulanceTrigger(textLower) && emergencyState !== 'DISPATCH_PENDING' && emergencyState !== 'HELP_ARRIVING') {
       setEmergencyState('DISPATCH_PENDING');
       setState('RESULT');
       speak("Initiating urgent distress protocol. Dispatching calls and SMS alerts to nearby hospitals and ambulance stations.");
@@ -457,44 +480,125 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
       return;
     }
 
-    // Fall back to original general voice RAG pipeline
+    const fallbackToVoiceProcess = async (fallbackText: string) => {
+      setState('PROCESSING');
+      try {
+        const response = await fetch('/api/ai/voice-process', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ transcript: fallbackText })
+        });
+        const data = await response.json();
+        
+        let relevantFacilities: any[] = [];
+        if (userLocation) {
+          const { lat, lng } = userLocation;
+          const nearby = await geoapifyService.findNearbyEmergencyFacilities(lat, lng).catch(() => []);
+          if (nearby.length > 0) {
+            relevantFacilities = nearby.map((f: any) => ({
+              name: f.name,
+              type: f.type,
+              location: { lat: f.lat, lng: f.lng },
+              dispatch_number: f.dispatch_number,
+              address: f.address
+            }));
+          }
+        }
+
+        setResult({
+          mode: data.mode,
+          content: data.content,
+          facilities: relevantFacilities
+        });
+        setState('RESULT');
+        if (data.content) {
+          speak(data.content);
+        }
+      } catch (err) {
+        setError("Connection lost. Retrying...");
+        setState('IDLE');
+      }
+    };
+
+    // Try Streaming Pipeline First
     setState('PROCESSING');
     try {
-      const response = await fetch('/api/ai/voice-process', {
+      const { getSocket } = await import('../services/incidentService');
+      const socket = getSocket();
+      
+      let aiResponseText = "";
+      let utteranceBuffer = "";
+      let hasStartedSpeaking = false;
+      
+      const handleChunk = (chunk: string) => {
+        aiResponseText += chunk;
+        setResult(prev => ({
+          mode: prev?.mode || 'GENERAL',
+          content: aiResponseText,
+          facilities: prev?.facilities || []
+        }));
+        
+        utteranceBuffer += chunk;
+        const match = utteranceBuffer.match(/([^\.!\?]+[\.!\?]+)(.*)/);
+        if (match) {
+          const sentence = match[1].trim();
+          utteranceBuffer = match[2];
+          if (sentence) speak(sentence);
+          hasStartedSpeaking = true;
+        }
+      };
+      
+      const handleEnd = async (data: any) => {
+        socket.off('voice:chunk', handleChunk);
+        socket.off('voice:end', handleEnd);
+        socket.off('voice:error', handleError);
+        
+        if (utteranceBuffer.trim()) speak(utteranceBuffer.trim());
+
+        let relevantFacilities: any[] = [];
+        if (userLocation) {
+          const { lat, lng } = userLocation;
+          const nearby = await geoapifyService.findNearbyEmergencyFacilities(lat, lng).catch(() => []);
+          if (nearby.length > 0) {
+            relevantFacilities = nearby.map((f: any) => ({
+              name: f.name,
+              type: f.type,
+              location: { lat: f.lat, lng: f.lng },
+              dispatch_number: f.dispatch_number,
+              address: f.address
+            }));
+          }
+        }
+        
+        setResult(prev => ({
+          mode: data.mode || 'GENERAL',
+          content: aiResponseText,
+          facilities: relevantFacilities
+        }));
+        setState('RESULT');
+      };
+      
+      const handleError = () => {
+         socket.off('voice:chunk', handleChunk);
+         socket.off('voice:end', handleEnd);
+         socket.off('voice:error', handleError);
+         if (!hasStartedSpeaking) fallbackToVoiceProcess(text);
+      };
+
+      socket.on('voice:chunk', handleChunk);
+      socket.on('voice:end', handleEnd);
+      socket.on('voice:error', handleError);
+
+      setResult({ mode: 'GENERAL', content: '', facilities: [] });
+
+      const response = await fetch('/api/ai/voice-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transcript: text })
+        body: JSON.stringify({ transcript: text, socketId: socket.id })
       });
-      const data = await response.json();
-      
-      let relevantFacilities: any[] = [];
-      if (userLocation) {
-        const { lat, lng } = userLocation;
-        const nearby: Facility[] = await geoapifyService.findNearbyEmergencyFacilities(lat, lng);
-        
-        if (nearby.length > 0) {
-          relevantFacilities = nearby.map(f => ({
-            name: f.name,
-            type: f.type,
-            location: { lat: f.lat, lng: f.lng },
-            dispatch_number: f.dispatch_number,
-            address: f.address
-          }));
-        }
-      }
-
-      setResult({
-        mode: data.mode,
-        content: data.content,
-        facilities: relevantFacilities
-      });
-      setState('RESULT');
-      if (data.content) {
-        speak(data.content);
-      }
-    } catch (err) {
-      setError("Connection lost. Retrying...");
-      setState('IDLE');
+      if (!response.ok) handleError();
+    } catch (e) {
+      fallbackToVoiceProcess(text);
     }
   };
 

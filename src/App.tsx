@@ -3078,8 +3078,9 @@ export default function App() {
                 {safetyWordError && <p className="text-[10px] text-red-400 font-bold mt-2">{safetyWordError}</p>}
                 <div className="flex flex-wrap gap-2 mt-3 text-[9px] font-black uppercase tracking-widest">
                   <span className="px-2 py-1 rounded-md bg-slate-800 text-slate-300">Engine: {wakeEngineStatus}</span>
-                  <span className="px-2 py-1 rounded-md bg-slate-800 text-slate-300">Background: {backgroundMode === 'foreground-service' ? 'foreground service' : backgroundMode === 'wake-lock' ? 'screen wake lock' : 'screen-on only'}</span>
-                  <span className="px-2 py-1 rounded-md bg-slate-800 text-slate-300">Contacts: {contactsFromProfile(medicalInfo).length}</span>
+                  <span className={`px-2 py-1 rounded-md ${backgroundMode === 'foreground-service' ? 'bg-emerald-900 text-emerald-300' : backgroundMode === 'wake-lock' ? 'bg-amber-900 text-amber-300' : 'bg-slate-800 text-slate-300'}`}>
+                    {backgroundMode === 'foreground-service' ? 'Background protection: active' : backgroundMode === 'wake-lock' ? 'Background protection: limited (screen must stay on)' : 'Background protection: off'}
+                  </span>                  <span className="px-2 py-1 rounded-md bg-slate-800 text-slate-300">Contacts: {contactsFromProfile(medicalInfo).length}</span>
                 </div>
               </div>
               <div className="flex items-center justify-between p-4 bg-slate-950/50 border border-slate-800 rounded-2xl">

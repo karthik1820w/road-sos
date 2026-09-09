@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anuradev/capacitor-background-mode": "^8.1.0",
     "@capacitor/android": "^8.3.4",
     "@capacitor/core": "^8.3.4",
     "@capacitor/dialog": "^8.0.1",
@@ -20,6 +21,8 @@
     "@google/generative-ai": "^0.24.1",
     "@langchain/core": "^1.1.48",
     "@langchain/google-genai": "^2.1.31",
+    "@picovoice/porcupine-web": "^4.0.1",
+    "@picovoice/web-voice-processor": "^4.0.10",
     "@supabase/supabase-js": "^2.43.2",
     "@types/pdfkit": "^0.17.6",
     "@types/qrcode": "^1.5.6",
@@ -53,7 +56,7 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^8.3.4",
-    "@playwright/test": "^1.62.1",
+    "@playwright/test": "^1.63.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/cookie-parser": "^1.4.10",
     "@types/d3": "^7.4.3",

@@ -38,20 +38,27 @@ export const backgroundService = {
         await BackgroundMode.enable();
         try { await BackgroundMode.disableBatteryOptimizations?.(); } catch { /* optional */ }
         active = 'foreground-service';
+        console.log(`[BackgroundService] Transitioned to: ${active}`);
         return active;
       } catch (e) {
-        console.warn('[Background] foreground service plugin not installed; falling back to wake lock.', (e as Error).message);
+        console.warn('[BackgroundService] foreground service plugin not installed; falling back to wake lock.', (e as Error).message);
       }
     }
     try {
       if ('wakeLock' in navigator) {
         wakeLock = await (navigator as any).wakeLock.request('screen');
-        wakeLock.addEventListener?.('release', () => { if (active === 'wake-lock') active = 'none'; });
+        wakeLock.addEventListener?.('release', () => { 
+          if (active === 'wake-lock') {
+            active = 'none';
+            console.log(`[BackgroundService] Wake lock released. Transitioned to: ${active}`);
+          }
+        });
         document.addEventListener('visibilitychange', reacquire);
         active = 'wake-lock';
+        console.log(`[BackgroundService] Transitioned to: ${active}`);
       }
     } catch (e) {
-      console.warn('[Background] wake lock unavailable', (e as Error).message);
+      console.warn('[BackgroundService] wake lock unavailable', (e as Error).message);
     }
     return active;
   },
@@ -68,6 +75,7 @@ export const backgroundService = {
     document.removeEventListener('visibilitychange', reacquire);
     wakeLock = null;
     active = 'none';
+    console.log(`[BackgroundService] Transitioned to: ${active}`);
   },
 };
 

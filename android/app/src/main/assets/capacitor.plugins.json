@@ -1,5 +1,9 @@
 [
 	{
+		"pkg": "@anuradev/capacitor-background-mode",
+		"classpath": "ar.com.anura.plugins.backgroundmode.BackgroundModePlugin"
+	},
+	{
 		"pkg": "@capacitor/dialog",
 		"classpath": "com.capacitorjs.plugins.dialog.DialogPlugin"
 	},

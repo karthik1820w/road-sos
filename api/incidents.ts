@@ -174,6 +174,8 @@ export function isValidE164(p: string) { return /^\+[1-9]\d{7,14}$/.test(p); }
 // link. If neither env var is configured we instead generate a random secret once per
 // process boot — every report link is still validly signed for the life of that process,
 // but nobody can pre-compute a token from reading the repo.
+export const isSigningSecretConfigured = () => !!(process.env.INCIDENT_SIGNING_SECRET || process.env.JWT_SECRET);
+
 let processSecret: string | null = null;
 const secret = () => {
   const configured = process.env.INCIDENT_SIGNING_SECRET || process.env.JWT_SECRET;

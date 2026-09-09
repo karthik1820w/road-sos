@@ -10,12 +10,17 @@ import { Server } from "socket.io";
 import cookieParser from "cookie-parser";
 import { z } from "zod";
 import xss from "xss";
-import { IncidentEngine, MemoryIncidentStore, SupabaseMirroredStore, createIncidentRouter, normalizePhone } from "./incidents.js";
+import { IncidentEngine, MemoryIncidentStore, SupabaseMirroredStore, createIncidentRouter, normalizePhone, isSigningSecretConfigured } from "./incidents.js";
 import { createDrivingRouter, MemoryDrivingModeStore, SupabaseMirroredDrivingModeStore } from "./drivingMode.js";
 import { analyzeMedicalConditionAndRecommendHospitals } from "./medical.js";
 import { createTrafficRouter } from "./traffic.js";
 
 dotenv.config();
+
+if (process.env.NODE_ENV === "production" && !isSigningSecretConfigured()) {
+  console.error("FATAL: INCIDENT_SIGNING_SECRET (or JWT_SECRET) is required in production to sign medical-report/QR links.");
+  process.exit(1);
+}
 
 const app = express();
 
@@ -694,6 +699,84 @@ app.post("/api/medical/analyze-and-recommend", async (req, res) => {
     res.json(result);
   } catch (e: any) {
     res.status(400).json({ error: e?.message || "Medical analysis failed" });
+  }
+});
+
+app.post("/api/ai/voice-stream", aiLimiter, async (req, res) => {
+  try {
+    const { transcript, socketId } = z.object({ 
+      transcript: z.string().min(1),
+      socketId: z.string().min(1) 
+    }).parse(req.body);
+    const safeTranscript = xss(transcript);
+
+    // 1. Direct local matching with our trained Q&A first
+    const trainedAns = findTrainedAnswer(safeTranscript);
+    if (trainedAns) {
+      console.log(`[Voice Stream] Intercepted and answered directly using trained Q&As for: "${safeTranscript}"`);
+      io.to(socketId).emit('voice:chunk', trainedAns);
+      io.to(socketId).emit('voice:end', { mode: 'TRAINING', original_transcript: safeTranscript });
+      return res.json({ success: true });
+    }
+
+    const prompt = `
+      You are a high-speed emergency response AI.
+      Analyze: "${safeTranscript}"
+      
+      OUTPUT FORMAT:
+      [MODE: EMERGENCY/TRAINING/GENERAL]
+      Content: [Short, direct response. Under 30 words.]
+
+      Context: ${KNOWLEDGE_BASE_CONTEXT}
+    `;
+
+    const ai = getAI();
+    const stream = await ai.models.generateContentStream({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        temperature: 0,
+      }
+    });
+
+    res.json({ success: true }); // Acknowledge POST
+
+    let fullText = '';
+    try {
+      for await (const chunk of stream) {
+        if (chunk.text) {
+          fullText += chunk.text;
+          // Clean out the mode bracket for speech
+          const cleanChunk = chunk.text.replace(/\[MODE: .*?\]/, "").replace(/Content:/, "");
+          if (cleanChunk.trim()) {
+            io.to(socketId).emit('voice:chunk', cleanChunk);
+          }
+        }
+      }
+      
+      let mode = 'GENERAL';
+      if (fullText.includes('[MODE: EMERGENCY]')) mode = 'EMERGENCY';
+      else if (fullText.includes('[MODE: TRAINING]')) mode = 'TRAINING';
+      
+      io.to(socketId).emit('voice:end', { mode, original_transcript: safeTranscript });
+    } catch (streamErr) {
+      console.error("Stream generation error:", streamErr);
+      io.to(socketId).emit('voice:error', { error: 'Stream failed mid-generation' });
+    }
+
+  } catch (error: any) {
+    if (error?.message?.includes("quota") || error?.message?.includes("429")) {
+        console.log("⚠️ AI Error: Quota.");
+    } else {
+        console.log("⚠️ AI Error.");
+    }
+    const { socketId, transcript } = req.body;
+    if (socketId) {
+      const fb = "Ensure safety, check breathing and pulse, apply firm pressure to wounds to stop bleeding, and wait for emergency services.";
+      io.to(socketId).emit('voice:chunk', fb);
+      io.to(socketId).emit('voice:end', { mode: 'GENERAL', original_transcript: transcript ? xss(transcript) : "" });
+    }
+    if (!res.headersSent) res.status(500).json({ error: "Generation failed" });
   }
 });
 
