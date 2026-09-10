@@ -27,7 +27,7 @@ import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
 import type { Server as SocketServer } from "socket.io";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { type AiMedicalAnalysis, type RecommendedHospital, analyzeMedicalConditionAndRecommendHospitals } from "./medical.js";
+import { type AiMedicalAnalysis, type RecommendedHospital, analyzeMedicalConditionAndRecommendHospitals } from "./_medical.js";
 
 // ───────────────────────────── Types ─────────────────────────────
 
@@ -206,7 +206,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // ───────────────────────────── Engine ─────────────────────────────
 
-import type { DrivingModeStore } from './drivingMode.js';
+import type { DrivingModeStore } from './_drivingMode.js';
 
 export interface EngineDeps {
   store: IncidentStore;

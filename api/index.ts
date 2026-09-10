@@ -10,11 +10,11 @@ import { Server } from "socket.io";
 import cookieParser from "cookie-parser";
 import { z } from "zod";
 import xss from "xss";
-import { IncidentEngine, MemoryIncidentStore, SupabaseMirroredStore, createIncidentRouter, normalizePhone, isSigningSecretConfigured } from "./incidents.js";
-import { createDrivingRouter, MemoryDrivingModeStore, SupabaseMirroredDrivingModeStore } from "./drivingMode.js";
-import { analyzeMedicalConditionAndRecommendHospitals } from "./medical.js";
-import { createTrafficRouter, getWeatherForLocation } from "./traffic.js";
-import { retrieveContext } from "./rag.js";
+import { IncidentEngine, MemoryIncidentStore, SupabaseMirroredStore, createIncidentRouter, normalizePhone, isSigningSecretConfigured } from "./_incidents.js";
+import { createDrivingRouter, MemoryDrivingModeStore, SupabaseMirroredDrivingModeStore } from "./_drivingMode.js";
+import { analyzeMedicalConditionAndRecommendHospitals } from "./_medical.js";
+import { createTrafficRouter, getWeatherForLocation } from "./_traffic.js";
+import { retrieveContext } from "./_rag.js";
 
 dotenv.config();
 

@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import xss from "xss";
-import { retrieveContext } from "./rag.js";
-import { AI_TIERS, MEDICAL_CONFIDENCE_THRESHOLD } from "./aiConfig.js";
+import { retrieveContext } from "./_rag.js";
+import { AI_TIERS, MEDICAL_CONFIDENCE_THRESHOLD } from "./_aiConfig.js";
 
 export interface AiMedicalAnalysis {
   condition: string;
