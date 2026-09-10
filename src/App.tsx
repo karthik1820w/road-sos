@@ -289,6 +289,7 @@ export default function App() {
   }, [recognizerLocale]);
   const [wakeEngineStatus, setWakeEngineStatus] = useState<string>('web-speech');
   const safetyMatcherRef = useRef<SafetyWordMatcher>(new SafetyWordMatcher({ word: safetyWordCfg.word, aliases: safetyWordCfg.aliases }));
+  const helpMatcherRef = useRef<SafetyWordMatcher>(new SafetyWordMatcher({ word: 'help', aliases: ['sos', 'emergency'] }));
   useEffect(() => { safetyMatcherRef.current = new SafetyWordMatcher({ word: safetyWordCfg.word, aliases: safetyWordCfg.aliases }); }, [safetyWordCfg]);
 
   // Feature 3 — offline keyword spotting (Picovoice Porcupine) when configured; Web Speech stays as fallback.
@@ -1359,10 +1360,22 @@ export default function App() {
         const cleanCombined = normalize(rawCombined);
         
         if (cleanCombined.trim().length > 0) {
-           // We just keep the existing safety word matcher offline checks inside here for fallback,
-           // but we also rely on the shared engine.
-           // Actually, the engine will handle wake words natively via onResult matching, 
-           // but since we want custom logic, we can keep the manual string checks.
+           // Check the user-configured custom safety word (e.g., 'neon' x 3)
+           if (safetyMatcherRef.current.feed(cleanCombined, f).triggered && !isBroadcastingRef.current) {
+             console.log(`[Voice] Custom safety word '${safetyWordCfg.word}' detected x3`);
+             forceDrivingModeOff('distress_word');
+             saveLogEntry(`Safety word '${safetyWordCfg.word}' detected x3`, userLocationRef.current);
+             executeNeonDistress();
+             return;
+           }
+
+           // Check the built-in emergency words ('help'/'sos'/'emergency' x 3)
+           if (helpMatcherRef.current.feed(cleanCombined, f).triggered && !isBroadcastingRef.current) {
+             console.log("[Voice] Built-in emergency word ('help'/'sos'/'emergency') detected x3");
+             speakNotification("SOS command recognized. Initiating emergency procedures.");
+             executeDistressBroadcast("Voice Command Emergency Triggered (Help x3)", true);
+             return;
+           }
 
            if (cleanCombined.includes('first aid') || cleanCombined.includes('first aid guide') || cleanCombined.includes('medical assistance') || cleanCombined.includes('medical help') || cleanCombined.includes('what to do in accident')) {
                console.log("Voice Command: Open First Aid Guide");
@@ -1375,18 +1388,6 @@ export default function App() {
            if (isAIFirstAidActiveRef.current && cleanCombined.length > 2) {
                console.log("Voice appending to AI First Aid Transcript:", cleanCombined);
                setAiFirstAidLiveTranscript(prev => prev + " " + cleanCombined);
-               return;
-           }
-
-           if (cleanCombined.includes('help') || cleanCombined.includes('sos') || cleanCombined.includes('emergency')) {
-               if (f && c > 0 && c < 0.3) {
-                 speakNotification("I heard something like help, please repeat if you need emergency assistance.");
-                 return;
-               }
-               console.log("Voice SOS Triggered");
-               const type = cleanCombined.includes('police') ? 'Police' : 'Ambulance';
-               speakNotification("SOS command recognized. Initiating emergency procedures.");
-               executeDistressBroadcast("Voice Command Emergency Triggered", true);
                return;
            }
 
