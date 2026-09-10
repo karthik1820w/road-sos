@@ -831,7 +831,9 @@ export function createIncidentRouter(engine: IncidentEngine, store: IncidentStor
     }
 
     try {
-      const incident = engine.create({
+      const deviceToken = req.header("x-device-token") || `admin-test-device-${Date.now()}`;
+      const incident = await engine.create({
+        deviceToken,
         kind: "SAFETY_WORD",
         reason: "Admin Smoke Test",
         patient: { name: "Test User" },
@@ -839,8 +841,7 @@ export function createIncidentRouter(engine: IncidentEngine, store: IncidentStor
         location: { lat: 12.9716, lng: 77.5946 },
         address: "Test Location, Bangalore"
       });
-      await store.save(incident);
-      
+
       // Determine base URL accurately
       const proto = req.headers["x-forwarded-proto"] || req.protocol;
       const host = req.headers.host;
