@@ -486,35 +486,23 @@ export function buildSmsBody(incident: Incident, baseUrl: string) {
     : incident.kind === "MEDICAL" ? "medical emergency"
     : incident.kind === "VOICE_HELP" ? "urgent HELP distress signal"
     : "emergency";
-  const conf = incident.confidence ? ` (${incident.confidence.toLowerCase()} confidence)` : "";
-  const staticLoc = incident.address ? `${incident.address}\n${mapsLink(incident.location)}` : mapsLink(incident.location);
-  const liveTracking = `Live Tracking: ${baseUrl}/track/${incident.id}?t=${incident.reportToken}`;
-  const reportUrl = `${baseUrl}/api/incidents/${incident.id}/report.pdf?t=${incident.reportToken}`;
+  const conf = incident.confidence ? ` (${incident.confidence.toLowerCase()} conf)` : "";
+  const addressShort = incident.address ? (incident.address.length > 50 ? incident.address.slice(0, 47) + "..." : incident.address) : "";
+  const staticLoc = addressShort ? `${addressShort} - ${mapsLink(incident.location)}` : mapsLink(incident.location);
+  const liveTracking = `Live Status & Med Report: ${baseUrl}/track/${incident.id}?t=${incident.reportToken}`;
 
   const med = [
     incident.patient.bloodGroup && `Blood: ${incident.patient.bloodGroup}`,
-    incident.patient.allergies && `Allergies: ${incident.patient.allergies}`,
-    incident.patient.conditions && `Conditions: ${incident.patient.conditions}`,
+    incident.patient.allergies && `Allergies: ${incident.patient.allergies.slice(0, 30)}`,
   ].filter(Boolean).join(" | ");
 
-  const aiCondition = incident.aiMedicalAnalysis
-    ? `Assessment: ${incident.aiMedicalAnalysis.condition} [${incident.aiMedicalAnalysis.severity}]`
-    : undefined;
-
-  const nearestHosp = incident.recommendedHospitals && incident.recommendedHospitals.length > 0
-    ? `Recommended Hospital: ${incident.recommendedHospitals[0].name} (${incident.recommendedHospitals[0].distanceKm} km)`
-    : undefined;
-
   return [
-    `ROADSOS DISTRESS ALERT: ${who} — ${kind}${conf}.`,
-    aiCondition,
-    `Location (Static): ${staticLoc}`,
+    `ROADSOS ALERT: ${who} - ${kind}${conf}.`,
+    med ? `Med: ${med}` : undefined,
+    `Loc: ${staticLoc}`,
     liveTracking,
-    med,
-    nearestHosp,
-    `Full report: ${reportUrl}`,
-    `Reply ACK to confirm you are responding.`,
-  ].filter(Boolean).join("\n\n");
+    `Reply ACK to confirm.`,
+  ].filter(Boolean).join("\n");
 }
 
 export function buildCallScript(incident: Incident) {
