@@ -813,6 +813,9 @@ export default function App() {
         if (latestData.incidents.length > 0) {
           text += `Detected ${latestData.incidents.length} incidents nearby.`;
         }
+        if (latestData.weather) {
+          text += ` The current temperature is ${latestData.weather.temperature} degrees Celsius.`;
+        }
         const utterance = new SpeechSynthesisUtterance(text);
         window.speechSynthesis.speak(utterance);
       }

@@ -37,6 +37,11 @@ export interface TrafficUpdate {
   radius: string;
   error?: string;
   updateSource: 'socket' | 'poll';
+  weather?: {
+    temperature: number;
+    rain: number;
+    precipitation: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -110,15 +115,27 @@ export const fetchLiveTrafficData = async (lat: number, lng: number): Promise<Tr
     };
   }
 
-  const [apiResult, locationResult] = await Promise.allSettled([
+  const [apiResult, locationResult, weatherResult] = await Promise.allSettled([
     fetch(`/api/traffic/overview?lat=${lat}&lng=${lng}&radiusKm=2.5`).then(r => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     }),
     resolveLocationName(lat, lng),
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&hourly=temperature_2m,rain,precipitation`).then(r => r.json())
   ]);
 
   const location = locationResult.status === 'fulfilled' ? locationResult.value : `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+  let weather;
+  if (weatherResult.status === 'fulfilled' && weatherResult.value?.hourly) {
+    const hourly = weatherResult.value.hourly;
+    // Get the first hour's data as current
+    weather = {
+      temperature: hourly.temperature_2m[0],
+      rain: hourly.rain[0],
+      precipitation: hourly.precipitation[0]
+    };
+  }
 
   if (apiResult.status === 'rejected') {
     return {
@@ -127,6 +144,7 @@ export const fetchLiveTrafficData = async (lat: number, lng: number): Promise<Tr
       trafficPresent: false, congestionLevel: 'Low',
       incidents: [], routes: [],
       fetchedAt: new Date().toLocaleTimeString(), radius: '2.5 km', updateSource: 'poll',
+      weather
     };
   }
 
@@ -160,6 +178,7 @@ export const fetchLiveTrafficData = async (lat: number, lng: number): Promise<Tr
     fetchedAt: new Date().toLocaleTimeString(),
     radius: api.radius || '2.5 km',
     updateSource: 'poll',
+    weather,
   };
 
   (window as any)._liveTrafficData = result;

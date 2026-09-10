@@ -39,13 +39,20 @@ export const TrafficUpdatesUI: React.FC<{
       <div className={`p-4 rounded-2xl border flex items-start gap-3 ${getBannerColor()}`}>
         {update.congestionLevel === 'High' ? <AlertTriangle className="flex-shrink-0" /> : (!update.trafficPresent ? <CheckCircle2 className="flex-shrink-0" /> : <Bell className="flex-shrink-0" />)}
         <div>
-          <h4 className="font-bold text-sm uppercase tracking-wider mb-1">Traffic Overview - {update.location}</h4>
+          <h4 className="font-bold text-sm uppercase tracking-wider mb-1">Traffic & Weather - {update.location}</h4>
           <p className="text-xs opacity-90">
             {!update.trafficPresent ? `✅ Roads are clear within ${update.radius} of ${update.location}. No incidents detected.` : (
               update.congestionLevel === 'High' ? `🚨 High traffic activity within ${update.radius}. ${update.incidents.length} incident(s) detected near ${update.location}.` :
               `⚠️ Moderate traffic detected within ${update.radius} of ${update.location}.`
             )}
           </p>
+          {update.weather && (
+            <div className="mt-2 flex items-center gap-4 text-xs font-medium text-slate-300 bg-black/20 p-2 rounded-lg w-fit border border-white/5">
+              <span title="Temperature">🌡️ {update.weather.temperature}°C</span>
+              <span title="Rain">🌧️ {update.weather.rain} mm</span>
+              <span title="Precipitation">💦 {update.weather.precipitation} mm</span>
+            </div>
+          )}
           <div className="mt-3 flex items-center gap-2">
             <span className="text-[10px] font-bold uppercase opacity-70">Congestion Level</span>
             <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
