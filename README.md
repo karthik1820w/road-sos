@@ -85,6 +85,20 @@ The application implements persistent watchdogs to continuously keep background 
 3. Geo-location mapping and shortest-path computation for nearest emergency trauma centers.
 4. Auto-dial out to predefined contacts or responders using Twilio Voice proxy.
 
+### End-to-End Twilio Dispatch Smoke Test
+To verify Twilio routing without triggering the safety word or crash detection, you can run a targeted test script against the live deployed API. 
+
+**Prerequisites:** Set `ADMIN_TEST_SECRET` as a secure string in your server's environment variables.
+
+To test from your terminal (against `http://localhost:3000` or your production domain `https://your-app.com`):
+```bash
+curl -X POST http://localhost:3000/api/admin/test-dispatch \
+     -H "Content-Type: application/json" \
+     -H "X-Admin-Test-Secret: YOUR_SECRET_HERE" \
+     -d '{"testContact": "+1234567890"}'
+```
+Check the JSON response to see if deliveries were queued, then review the server logs to see the final `DISPATCH SUMMARY` block.
+
 ---
 Built with ❤️ for intelligent safety.
 

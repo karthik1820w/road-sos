@@ -336,9 +336,17 @@ export async function raiseIncident(input: CreateIncidentInput, opts: { idempote
   const key = opts.idempotencyKey || crypto.randomUUID();
   const allowNative = opts.allowNativeFallback !== false;
 
+  const triggerFallbackLoudly = (reason: string, details: string, fallbackInput = input) => {
+    console.error(`[NATIVE FALLBACK TRIGGERED] Reason: ${reason}. Details: ${details}`);
+    if (typeof window !== 'undefined' && allowNative) {
+      alert(`⚠️ EMERGENCY DISPATCH FALLBACK ACTIVATED ⚠️\n\nReason: ${reason}\n\n${details}\n\nOpening your phone's native SMS/dialer as a last resort.`);
+    }
+    return allowNative ? openNativeFallback(fallbackInput) : false;
+  };
+
   if (!navigator.onLine) {
     queuePendingIncident(input, key);
-    const used = allowNative ? openNativeFallback(input) : false;
+    const used = triggerFallbackLoudly('OFFLINE', 'The device has no internet connection. The request has been queued.');
     return { incident: null, summary: null, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: 'OFFLINE' };
   }
 
@@ -347,21 +355,21 @@ export async function raiseIncident(input: CreateIncidentInput, opts: { idempote
     const created = await createIncident(input, key);
     incident = created.incident;
     if (created.warnings.includes('NO_VALID_CONTACTS')) {
-      const used = allowNative ? openNativeFallback({ ...input, contacts: [] }) : false;
+      const used = triggerFallbackLoudly('NO_VALID_CONTACTS', 'The server responded successfully, but there were no valid contacts provided to send to.', { ...input, contacts: [] });
       return { incident, summary: null, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: 'NO_CONTACTS' };
     }
     const out = await dispatchIncident(incident.id);
     incident = out.incident;
-    if (out.summary.allFailed && allowNative) {
-      const used = openNativeFallback(input);
+    if (out.summary.allFailed) {
       const reason = incident.deliveries.find((d: any) => d.status === 'failed')?.error || 'ALL_CHANNELS_FAILED';
+      const used = triggerFallbackLoudly('ALL_CHANNELS_FAILED', `Twilio API calls were attempted but rejected: ${reason}`);
       return { incident, summary: out.summary, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: reason };
     }
     return { incident, summary: out.summary, usedNativeFallback: false };
   } catch (e: any) {
     console.error('[Incident] raise failed:', e?.message);
     if (!incident) queuePendingIncident(input, key);
-    const used = allowNative ? openNativeFallback(input) : false;
+    const used = triggerFallbackLoudly('SERVER_UNREACHABLE', `The request to /api/incidents failed entirely: ${e?.message || 'UNKNOWN ERROR'}`);
     return { incident: e?.incident || incident, summary: null, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: e?.code || e?.message || 'UNKNOWN' };
   }
 }

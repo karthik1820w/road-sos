@@ -152,12 +152,13 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({ onComplete }
                   <div>
                     <h3 className="text-white font-bold mb-1">Device Phone Number</h3>
                     <p className="text-slate-400 text-sm">
-                      Web Apps cannot read your SIM number or call logs securely. Enter your real number manually.
+                      Tap the input below and your device will automatically suggest your phone number.
                     </p>
                   </div>
                 </div>
                 <input 
                   type="tel"
+                  autoComplete="tel"
                   placeholder="+91..."
                   value={phone}
                   onChange={e => setPhone(e.target.value)}
@@ -216,7 +217,7 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({ onComplete }
                 }}
                 className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3 rounded-xl transition duration-200 mb-2 flex justify-center"
               >
-                Allow Contacts Access
+                Allow Contacts & Turn On
               </button>
               <button 
                 onClick={finishSetup}

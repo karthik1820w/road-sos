@@ -1426,19 +1426,19 @@ export default function App() {
              return;
            }
            
-           if (cleanCombined.includes("open voice assistant") || cleanCombined.includes("open chatbot") || cleanCombined.includes("start voice assistant")) {
-             setIsVoiceActive(true);
-             setIsChatbotModalOpen(true);
-             setChatbotGreeting("Voice assistant opened. How can I help you?");
-             speakNotification("Voice assistant opened. How can I help you?");
-             return;
-           } else if (cleanCombined.includes("close voice assistant") || cleanCombined.includes("close chatbot") || cleanCombined.includes("stop voice assistant") || cleanCombined.includes("close assistant") || cleanCombined.includes("stop chatbot") || cleanCombined.includes("exit assistant") || cleanCombined.includes("exit chatbot")) {
+           if (cleanCombined.includes("close chatbot") || cleanCombined.includes("stop chatbot") || cleanCombined.includes("exit chatbot")) {
              setIsVoiceActive(false);
              setIsChatbotModalOpen(false);
              setIsAIFirstAidActive(false);
              isAIFirstAidActiveRef.current = false;
              setAiFirstAidLiveTranscript("");
              speakNotification("Assistant closed.");
+             return;
+           } else if (cleanCombined.includes("chatbot")) {
+             setIsVoiceActive(true);
+             setIsChatbotModalOpen(true);
+             setChatbotGreeting("Voice assistant opened. How can I help you?");
+             speakNotification("Voice assistant opened. How can I help you?");
              return;
            }
            
@@ -1490,25 +1490,6 @@ export default function App() {
            }
 
            // App UI Commands
-           const navPatterns = ['navigate to', 'take me to', 'directions to', 'go to', 'route to', 'drive to'];
-           if (navPatterns.some(kw => cleanCombined.includes(kw))) {
-               console.log("Voice Command: Navigation");
-               setChatbotGreeting(cleanCombined); // Chatbot will process this as initial greeting, but actually the chatbot only speaks the initial greeting.
-               // We can trigger a custom event that ChatbotModal listens to!
-               setIsChatbotModalOpen(true);
-               setTimeout(() => {
-                 window.dispatchEvent(new CustomEvent('chatbot-query', { detail: cleanCombined }));
-               }, 500);
-               return;
-           }
-
-           if (cleanCombined === "hello" || cleanCombined.includes("hello") || cleanCombined === "hi" || cleanCombined === "heilo" || cleanCombined.includes("hi ") || cleanCombined.includes("hey ")) {
-               console.log("Voice Command: Hello");
-               setChatbotGreeting(medicalInfoRef.current.name ? `Hello ${medicalInfoRef.current.name}, how can I help?` : 'Hello, how can I help?');
-               setIsChatbotModalOpen(true);
-               return;
-           }
-
            if (cleanCombined === "refresh" || cleanCombined.includes("refresh the app") || cleanCombined.includes("refresh page")) {
                console.log("Voice Command: Refresh");
                speakNotification("Refreshing the application.");

@@ -381,6 +381,26 @@ export class IncidentEngine {
     await this.deps.store.save(incident);
     this.emit(incident);
 
+    // Structured log summary of dispatch results
+    const summaryLog = {
+      incidentId: incident.id,
+      kind: incident.kind,
+      contacts: incident.contacts.length,
+      deliveries: incident.deliveries.map(d => ({
+        channel: d.channel,
+        to: d.to,
+        status: d.status,
+        error: d.error
+      }))
+    };
+    if (incident.deliveries.length === 0) {
+      console.error(`[IncidentEngine] DISPATCH SUMMARY: 0 Twilio API calls attempted. No deliveries created.`);
+    } else if (incident.deliveries.every(d => d.status === "failed")) {
+      console.error(`[IncidentEngine] DISPATCH SUMMARY: Twilio API calls attempted and rejected. Details: ${JSON.stringify(summaryLog)}`);
+    } else {
+      console.log(`[IncidentEngine] DISPATCH SUMMARY: Dispatch successful. Details: ${JSON.stringify(summaryLog)}`);
+    }
+
     // Alert if all channels failed
     if (incident.deliveries.length > 0 && incident.deliveries.every(d => d.status === "failed")) {
       console.error(`[IncidentEngine] FATAL: All dispatch channels failed for incident ${incident.id}`);
@@ -796,6 +816,47 @@ export function createIncidentRouter(engine: IncidentEngine, store: IncidentStor
       twiml.message("RoadSOS: No active emergency is linked to this number.");
     }
     res.type("text/xml").send(twiml.toString());
+  });
+
+  // TASK 4: Admin route for end-to-end dispatch smoke test
+  router.post("/api/admin/test-dispatch", async (req, res) => {
+    const secret = process.env.ADMIN_TEST_SECRET;
+    if (!secret || req.headers['x-admin-test-secret'] !== secret) {
+      return res.status(403).json({ error: "Forbidden: Invalid or missing X-Admin-Test-Secret header. Set ADMIN_TEST_SECRET in your backend environment variables." });
+    }
+
+    const testContact = req.body.testContact;
+    if (!testContact) {
+      return res.status(400).json({ error: "Missing testContact in JSON body (e.g., { \"testContact\": \"+1234567890\" })" });
+    }
+
+    try {
+      const incident = engine.create({
+        kind: "SAFETY_WORD",
+        reason: "Admin Smoke Test",
+        patient: { name: "Test User" },
+        contacts: [testContact],
+        location: { lat: 12.9716, lng: 77.5946 },
+        address: "Test Location, Bangalore"
+      });
+      await store.save(incident);
+      
+      // Determine base URL accurately
+      const proto = req.headers["x-forwarded-proto"] || req.protocol;
+      const host = req.headers.host;
+      const baseUrl = `${proto}://${host}`;
+
+      const dispatched = await engine.dispatch(incident, baseUrl);
+      
+      return res.json({
+        message: "Test dispatch executed.",
+        incidentId: dispatched.id,
+        deliveries: dispatched.deliveries
+      });
+    } catch (e: any) {
+      console.error("[Test Dispatch Error]", e);
+      return res.status(500).json({ error: "Failed to dispatch test incident", details: e.message });
+    }
   });
 
   // Socket rooms: clients join their incident to receive incident:update pushes.

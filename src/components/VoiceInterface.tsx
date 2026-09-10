@@ -356,7 +356,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
       setState('RESULT');
       helpCountRef.current = 0;
       if (helpResetTimeoutRef.current) clearTimeout(helpResetTimeoutRef.current);
-      triggerEmergencyDispatch("Voice activated emergency distress alert (HELP spoken 3 times)");
+      triggerEmergencyDispatch("Voice activated emergency distress alert (HELP spoken 3 times)", 'SAFETY_WORD');
       return;
     }
 
@@ -401,7 +401,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
         speak("Medical alert. User is fainting. Initiating distress call to family members.");
         setTranscript("About to faint...");
         
-        await triggerEmergencyDispatch("User reported they are about to faint. Immediate assistance required.");
+        await triggerEmergencyDispatch("User reported they are about to faint. Immediate assistance required.", 'MEDICAL');
         return;
       } else {
         speak("Did you say you are going to faint? Please say yes to confirm or repeat faint.");
@@ -458,7 +458,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
       setState('RESULT');
       speak("Initiating urgent distress protocol. Dispatching calls and SMS alerts to nearby hospitals and ambulance stations.");
       
-      await triggerEmergencyDispatch(lastIncident || "Severe injury distress");
+      await triggerEmergencyDispatch(lastIncident || "Severe injury distress", 'MEDICAL');
       return;
     }
 
@@ -723,7 +723,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
                   onClick={() => {
                     setEmergencyState('DISPATCH_PENDING');
                     speak("Initiating urgent distress protocol. Dispatching calls and SMS alerts to nearest hospitals.");
-                    triggerEmergencyDispatch(lastIncident || "Severe Injury reported");
+                    triggerEmergencyDispatch(lastIncident || "Severe Injury reported", 'MEDICAL');
                   }}
                   className="w-full bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-xl flex items-center justify-center gap-2 active:scale-95 transition-all text-xs uppercase tracking-widest"
                 >

@@ -16,12 +16,9 @@ export const useVoiceAgent = (
   useEffect(() => {
     // Only process new transcripts
     if (!transcript || transcript === lastProcessedTranscript.current) return;
-    
-    // Check if the user used the wake word (e.g. "NEON" or "Help")
+    // Check if the user used the wake word "chatbot"
     const lowerTranscript = transcript.toLowerCase();
-    const hasWakeWord = lowerTranscript.includes('neon') || 
-                        lowerTranscript.includes('help') || 
-                        lowerTranscript.includes('chatbot');
+    const hasWakeWord = lowerTranscript.includes('chatbot');
                         
     if (!hasWakeWord) return;
 
