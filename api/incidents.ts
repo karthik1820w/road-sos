@@ -298,24 +298,27 @@ export class IncidentEngine {
     // Determine which emergency-services number to prepend based on incident pathway:
     //   MANUAL_SOS / SAFETY_WORD → POLICE_NUMBER (danger pathway)
     //   VOICE_HELP / MEDICAL / CRASH → HOSPITAL_NUMBER (medical pathway)
-    
-    // OVERRIDE: To prevent Twilio unverified number errors on Trial accounts (which cause a fallback 
-    // to the user's native phone SMS), we override the destination to ONLY use the configured numbers.
-    const overrideNumber = this.deps.fromNumber || this.deps.hospitalNumber;
-    if (overrideNumber) {
-      incident.contacts = [overrideNumber];
-      console.warn(`[IncidentEngine] Overriding contacts to use configured Twilio/Test number: ${overrideNumber}`);
-    } else {
-      if (incident.kind === "MANUAL_SOS" || incident.kind === "SAFETY_WORD") {
-        const police = this.deps.policeNumber;
+    if (incident.kind === "MANUAL_SOS" || incident.kind === "SAFETY_WORD") {
+      const rawPoliceNumber = this.deps.policeNumber ?? process.env.POLICE_NUMBER;
+      if (rawPoliceNumber) {
+        const police = normalizePhone(rawPoliceNumber);
         if (police && isValidE164(police) && !incident.contacts.includes(police)) {
           incident.contacts.unshift(police);
         }
       } else {
-        const hosp = this.deps.hospitalNumber;
+        console.warn(`[IncidentEngine] POLICE_NUMBER is not configured; dispatching to personal emergency contacts only (incident ${incident.id}).`);
+      }
+    }
+
+    if (incident.kind === "VOICE_HELP" || incident.kind === "MEDICAL" || incident.kind === "CRASH") {
+      const rawHospitalNumber = this.deps.hospitalNumber ?? process.env.HOSPITAL_NUMBER;
+      if (rawHospitalNumber) {
+        const hosp = normalizePhone(rawHospitalNumber);
         if (hosp && isValidE164(hosp) && !incident.contacts.includes(hosp)) {
           incident.contacts.unshift(hosp);
         }
+      } else {
+        console.warn(`[IncidentEngine] HOSPITAL_NUMBER is not configured; dispatching to personal emergency contacts only (incident ${incident.id}).`);
       }
     }
 
