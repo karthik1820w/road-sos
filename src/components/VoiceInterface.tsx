@@ -349,16 +349,15 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ userLocation, on
       }, 15000);
     }
 
-    if ((helpCountRef.current >= 3 || textLower.includes("help help help") || textLower.includes("help, help, help") || textLower.includes("help me, help me, help me")) && emergencyState === 'NORMAL') {
-      setEmergencyState('DISPATCH_PENDING');
-      speak("Initiating urgent distress protocol. Automated call, message, and medical report dispatched to hospital and emergency contacts.");
-      setTranscript("Help! Help! Help!");
-      setState('RESULT');
-      helpCountRef.current = 0;
-      if (helpResetTimeoutRef.current) clearTimeout(helpResetTimeoutRef.current);
-      triggerEmergencyDispatch("Voice activated emergency distress alert (HELP spoken 3 times)", 'SAFETY_WORD');
-      return;
-    }
+      if ((helpCountRef.current >= 3 || textLower.includes("help help help") || textLower.includes("help, help, help") || textLower.includes("help me, help me, help me")) && emergencyState === 'NORMAL') {
+        speak("Voice distress acknowledged. Initiating silent distress protocol.");
+        setEmergencyState('DISPATCH_PENDING');
+        setState('RESULT');
+        helpCountRef.current = 0;
+        if (helpResetTimeoutRef.current) clearTimeout(helpResetTimeoutRef.current);
+        triggerEmergencyDispatch("Voice activated emergency distress alert (HELP spoken 3 times)", 'VOICE_HELP');
+        return;
+      }
 
     // NOTE: Safety-word detection (previously hardcoded to "neon" here) has been removed.
     // Safety-word matching is handled exclusively by App.tsx via SafetyWordMatcher, which
