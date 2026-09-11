@@ -58,7 +58,7 @@ describe('IncidentEngine.dispatch', () => {
     expect(inc.deliveries).toHaveLength(4);
     expect(inc.deliveries.every(d => d.status === 'sent')).toBe(true);
     expect(tw.messages[0].body).toContain('Asha');
-    expect(tw.messages[0].body).toContain('/api/incidents/' + inc.id + '/report.pdf?t=');
+    expect(tw.messages[0].body).toContain('/track/' + inc.id + '?t=');
     expect(tw.messages[0].body).not.toMatch(/BOB/);
     expect(tw.calls[0].twiml).toContain(`/api/twilio/incidents/${inc.id}/gather`);
   });
