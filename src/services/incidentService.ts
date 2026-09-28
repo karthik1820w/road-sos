@@ -11,6 +11,7 @@
  */
 import { io, Socket } from 'socket.io-client';
 import { Capacitor } from '@capacitor/core';
+import { EmergencyFallback, type EmergencyFallbackPlugin } from './emergencyFallbackPlugin';
 
 export type IncidentState = 'DETECTED' | 'PROBING' | 'DISPATCHED' | 'ACKED' | 'CLOSED' | 'CANCELLED';
 export type IncidentKind = 'CRASH' | 'MANUAL_SOS' | 'SAFETY_WORD' | 'VOICE_HELP' | 'MEDICAL';
@@ -327,26 +328,83 @@ export async function flushPendingIncidents(onFlushed?: (incident: Incident) => 
 // ───────────── one-call orchestration ─────────────
 
 /**
- * Create + dispatch an incident with every fallback applied:
- *  offline → native SMS/112 + queue for later
- *  server error / no contacts → native SMS/112
- *  all channels failed → native SMS/112 (incident still exists for the record)
+ * Attempt genuinely automatic native fallback (zero-tap background SMS + sequential auto-dial).
+ * 
+ * Note on iOS:
+ * Apple's platform strictly prohibits apps from sending SMS messages programmatically or placing
+ * direct phone calls without explicit user interaction (tap). Therefore, zero-tap background
+ * fallback is structurally impossible on iOS and is strictly an Android-only capability.
+ */
+export async function attemptAutomaticNativeFallback(
+  input: CreateIncidentInput,
+  plugin: EmergencyFallbackPlugin,
+  speakFn: (msg: string) => void
+): Promise<boolean> {
+  if (!isMobileDevice() || !Capacitor.isNativePlatform()) return false;
+  // iOS cannot send SMS or place calls silently by design
+  if (Capacitor.getPlatform() === 'ios') return false;
+
+  const contacts = [...input.contacts];
+  const isDanger = input.kind === 'MANUAL_SOS' || input.kind === 'SAFETY_WORD';
+  const officialNum = isDanger
+    ? (import.meta.env.VITE_POLICE_NUMBER || '112')
+    : (import.meta.env.VITE_HOSPITAL_NUMBER || '112');
+
+  if (officialNum && !contacts.includes(officialNum)) {
+    contacts.unshift(officialNum);
+  }
+
+  if (contacts.length === 0) return false;
+
+  speakFn("Sending automatic emergency messages now");
+
+  const body = buildFallbackSms(input);
+  try {
+    await plugin.sendEmergencySms({ contacts, body });
+    await plugin.dialEmergencySequence({ numbers: contacts, perCallTimeoutMs: 15000 });
+    return true;
+  } catch (e: unknown) {
+    console.warn("Automatic native fallback failed or rejected", e);
+    return false; // usually due to permission denied or unexpected error
+  }
+}
+
+function speakHelper(msg: string) {
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(msg));
+  }
+}
+
+/**
+ * Create + dispatch an incident with every fallback tier applied in strict order:
+ *  Tier 1: Cloud/Twilio dispatch via backend
+ *  Tier 2: Automatic native cellular SMS + sequential auto-call (zero-tap)
+ *  Tier 3: User-assisted openNativeFallback (tap-required) as final safety net
  */
 export async function raiseIncident(input: CreateIncidentInput, opts: { idempotencyKey?: string; allowNativeFallback?: boolean } = {}): Promise<DispatchOutcome> {
   const key = opts.idempotencyKey || crypto.randomUUID();
   const allowNative = opts.allowNativeFallback !== false;
 
-  const triggerFallbackLoudly = (reason: string, details: string, fallbackInput = input) => {
+  const triggerFallbackLoudly = async (reason: string, details: string, fallbackInput = input) => {
     console.error(`[NATIVE FALLBACK TRIGGERED] Reason: ${reason}. Details: ${details}`);
-    if (typeof window !== 'undefined' && allowNative) {
-      alert(`⚠️ EMERGENCY DISPATCH FALLBACK ACTIVATED ⚠️\n\nReason: ${reason}\n\n${details}\n\nOpening your phone's native SMS/dialer as a last resort.`);
+    if (allowNative) {
+      const automaticSuccess = await attemptAutomaticNativeFallback(fallbackInput, EmergencyFallback, speakHelper);
+      if (automaticSuccess) {
+        return true;
+      }
+      
+      if (typeof window !== 'undefined') {
+        alert(`🚨 EMERGENCY DISPATCH FALLBACK ACTIVATED 🚨\n\nReason: ${reason}\n\n${details}\n\nOpening your phone's native SMS/dialer as a last resort.`);
+      }
+      return openNativeFallback(fallbackInput);
     }
-    return allowNative ? openNativeFallback(fallbackInput) : false;
+    return false;
   };
 
   if (!navigator.onLine) {
     queuePendingIncident(input, key);
-    const used = triggerFallbackLoudly('OFFLINE', 'The device has no internet connection. The request has been queued.');
+    const used = await triggerFallbackLoudly('OFFLINE', 'The device has no internet connection. The request has been queued.');
     return { incident: null, summary: null, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: 'OFFLINE' };
   }
 
@@ -355,21 +413,22 @@ export async function raiseIncident(input: CreateIncidentInput, opts: { idempote
     const created = await createIncident(input, key);
     incident = created.incident;
     if (created.warnings.includes('NO_VALID_CONTACTS')) {
-      const used = triggerFallbackLoudly('NO_VALID_CONTACTS', 'The server responded successfully, but there were no valid contacts provided to send to.', { ...input, contacts: [] });
+      const used = await triggerFallbackLoudly('NO_VALID_CONTACTS', 'The server responded successfully, but there were no valid contacts provided to send to.', { ...input, contacts: [] });
       return { incident, summary: null, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: 'NO_CONTACTS' };
     }
     const out = await dispatchIncident(incident.id);
     incident = out.incident;
     if (out.summary.allFailed) {
-      const reason = incident.deliveries.find((d: any) => d.status === 'failed')?.error || 'ALL_CHANNELS_FAILED';
-      const used = triggerFallbackLoudly('ALL_CHANNELS_FAILED', `Twilio API calls were attempted but rejected: ${reason}`);
+      const reason = incident.deliveries.find((d: Delivery) => d.status === 'failed')?.error || 'ALL_CHANNELS_FAILED';
+      const used = await triggerFallbackLoudly('ALL_CHANNELS_FAILED', `Twilio API calls were attempted but rejected: ${reason}`);
       return { incident, summary: out.summary, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: reason };
     }
     return { incident, summary: out.summary, usedNativeFallback: false };
-  } catch (e: any) {
-    console.error('[Incident] raise failed:', e?.message);
+  } catch (e: unknown) {
+    const err = e as { message?: string; code?: string; incident?: Incident };
+    console.error('[Incident] raise failed:', err?.message);
     if (!incident) queuePendingIncident(input, key);
-    const used = triggerFallbackLoudly('SERVER_UNREACHABLE', `The request to /api/incidents failed entirely: ${e?.message || 'UNKNOWN ERROR'}`);
-    return { incident: e?.incident || incident, summary: null, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: e?.code || e?.message || 'UNKNOWN' };
+    const used = await triggerFallbackLoudly('SERVER_UNREACHABLE', `The request to /api/incidents failed entirely: ${err?.message || 'UNKNOWN ERROR'}`);
+    return { incident: err?.incident || incident, summary: null, usedNativeFallback: used, fallbackText: buildFallbackSms(input), error: err?.code || err?.message || 'UNKNOWN' };
   }
 }

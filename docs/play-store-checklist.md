@@ -9,8 +9,10 @@ This document details the sensitive permissions RoadSOS requests, mapped directl
 * **Permission:** `SEND_SMS`, `CALL_PHONE`
 * **Requested in App:** `AndroidManifest.xml`
 * **Feature:** Emergency SOS Auto-Dial and Alerting
-* **Justification for Play Console:** The app serves as a critical road safety and emergency response tool. When a crash is detected via sensor fusion, or the user manually triggers an SOS, the app automatically dispatches an SMS with their live GPS coordinates and places an automated phone call to the user's predefined emergency contacts.
-* **Why the Twilio/Cloud webhook isn't enough:** The app has a cloud webhook fallback, but if the user has no internet connection (e.g., stranded in a rural area), the app MUST fallback to native cellular SMS and Phone Dialing to ensure the emergency signal gets out. This is a life-safety feature.
+* **Justification for Play Console:** The app serves as a critical road safety and emergency response tool. When a crash is detected via sensor fusion, or the user explicitly triggers an SOS (e.g., via a voice-confirmed safety word or manual button), the app automatically dispatches an SMS with their live GPS coordinates and places an automated phone call to the user's predefined emergency contacts.
+* **Why the Twilio/Cloud webhook isn't enough (Zero-Tap Fallback):** The primary dispatch system uses a server-backend (via Twilio). However, if the user is in a critical emergency and their device loses internet connectivity or the primary server is unreachable, the device MUST still be able to alert emergency contacts. The app employs a genuinely automatic (zero-tap) native cellular SMS and Phone Dialing fallback mechanism. 
+* **No Per-Instance Confirmation:** Because the user may be incapacitated, injured, or otherwise unable to physically tap "Send" or "Call" on a pre-filled OS intent prompt, the application requires the ability to automatically and silently send SMS messages and place sequential phone calls. This zero-interaction background sending ONLY occurs when a voice-confirmed or manual emergency trigger has already occurred AND the primary server-based dispatch has completely failed. 
+* **Approval Caveat:** We believe this falls under Play's policy exceptions for apps that provide critical safety alerts. However, actual approval is entirely Google's decision at review time based on current policies, and this documentation does not guarantee acceptance.
 
 ## 2. Background Location (`ACCESS_BACKGROUND_LOCATION`)
 

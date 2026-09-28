@@ -30,15 +30,10 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// api/auth.ts
-var auth_exports = {};
-__export(auth_exports, {
-  authenticateToken: () => authenticateToken,
-  default: () => auth_default
-});
+// api/_auth.ts
 var import_express4, import_bcryptjs, import_jsonwebtoken2, import_express_rate_limit, import_supabase_js2, import_zod4, import_xss4, import_crypto3, router, _supabase, getSupabase, supabase2, getJwtSecret, JWT_EXPIRES_IN, emailPasswordSchema, tokenSchema, resetPasswordSchema, loginLimiter, registerLimiter, resetLimiter, authenticateToken, auth_default;
 var init_auth = __esm({
-  "api/auth.ts"() {
+  "api/_auth.ts"() {
     "use strict";
     import_express4 = __toESM(require("express"), 1);
     import_bcryptjs = __toESM(require("bcryptjs"), 1);
@@ -230,6 +225,20 @@ var init_auth = __esm({
   }
 });
 
+// api/auth.ts
+var auth_exports = {};
+__export(auth_exports, {
+  authenticateToken: () => authenticateToken,
+  default: () => auth_default
+});
+var init_auth2 = __esm({
+  "api/auth.ts"() {
+    "use strict";
+    init_auth();
+    init_auth();
+  }
+});
+
 // api/index.ts
 var api_exports = {};
 __export(api_exports, {
@@ -249,7 +258,7 @@ var import_cookie_parser = __toESM(require("cookie-parser"), 1);
 var import_zod5 = require("zod");
 var import_xss5 = __toESM(require("xss"), 1);
 
-// api/incidents.ts
+// api/_incidents.ts
 var import_express = __toESM(require("express"), 1);
 var import_crypto = __toESM(require("crypto"), 1);
 var import_zod = require("zod");
@@ -258,10 +267,10 @@ var import_twilio = __toESM(require("twilio"), 1);
 var import_pdfkit = __toESM(require("pdfkit"), 1);
 var import_qrcode = __toESM(require("qrcode"), 1);
 
-// api/medical.ts
+// api/_medical.ts
 var import_genai2 = require("@google/genai");
 
-// api/rag.ts
+// api/_rag.ts
 var import_supabase_js = require("@supabase/supabase-js");
 var import_genai = require("@google/genai");
 var supabaseConfigured = !!(process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY));
@@ -302,7 +311,7 @@ async function retrieveContext(query, domain, k = 5) {
   }
 }
 
-// api/aiConfig.ts
+// api/_aiConfig.ts
 var AI_TIERS = {
   emergencyMedical: { model: "gemini-3.1-pro", temperature: 0.08, maxOutputTokens: 600 },
   roadRulesGeneral: { model: "gemini-3.1-pro", temperature: 0.4, maxOutputTokens: 350 },
@@ -311,7 +320,7 @@ var AI_TIERS = {
 };
 var MEDICAL_CONFIDENCE_THRESHOLD = 0.7;
 
-// api/medical.ts
+// api/_medical.ts
 function calculateDistanceKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -424,6 +433,8 @@ function getLocalClinicalFallback(patient, reason, sensorSummary) {
         "Monitor breathing and pulse continuously; begin CPR immediately if unresponsive.",
         "Keep patient calm and avoid any physical exertion."
       ],
+      followUpQuestions: ["Is the chest pain radiating to the arm or jaw?", "Are they experiencing shortness of breath or sweating?"],
+      vitalSignAlerts: ["Monitor for sudden drop in pulse", "Watch for loss of consciousness"],
       specialtiesNeeded: ["Cardiology", "Cath Lab", "Cardiac ICU", "Emergency Medicine"],
       triageSummary: "Urgent suspected cardiac distress. Immediate ECG, oxygenation, and cardiology team readiness required."
     };
@@ -439,6 +450,8 @@ function getLocalClinicalFallback(patient, reason, sensorSummary) {
         "Assist patient with their prescribed inhaler if conscious and available.",
         "Reassure the patient and do not crowd around them."
       ],
+      followUpQuestions: ["Do they have a history of asthma or allergies?", "Are their lips or face turning blue?"],
+      vitalSignAlerts: ["Watch for severe wheezing or silence (no air movement)", "Monitor for cyanosis (bluish tint)"],
       specialtiesNeeded: ["Pulmonology", "Respiratory ICU", "Emergency Medicine"],
       triageSummary: "Severe respiratory distress with airway vulnerability. Immediate nebulization and oxygen therapy needed."
     };
@@ -454,6 +467,8 @@ function getLocalClinicalFallback(patient, reason, sensorSummary) {
         "Keep patient warm with a jacket/blanket to prevent hypothermic shock.",
         "Continuously monitor airway and responsiveness until paramedics arrive."
       ],
+      followUpQuestions: ["Is there any active severe bleeding?", "Is the patient conscious and responding to your voice?"],
+      vitalSignAlerts: ["Monitor for unequal pupil size", "Watch for clear fluid from ears or nose"],
       specialtiesNeeded: ["Level-1 Trauma Care", "Orthopedic Surgery", "Neurosurgery", "Blood Transfusion Unit"],
       triageSummary: `High-energy road impact (${peakG > 0 ? `${peakG.toFixed(1)}G` : "severe impact"}). Surgical trauma triage and radiological imaging required upon arrival.`
     };
@@ -468,6 +483,8 @@ function getLocalClinicalFallback(patient, reason, sensorSummary) {
       "Place patient in recovery position if unconscious but breathing normally.",
       "Comfort the patient and stay on the line with emergency services."
     ],
+    followUpQuestions: ["Can you describe exactly where they are hurt?", "Are they awake and able to talk to you?"],
+    vitalSignAlerts: ["Monitor overall responsiveness and breathing rate"],
     specialtiesNeeded: ["24/7 Emergency Medicine", "Intensive Care Unit", "General Surgery"],
     triageSummary: "Emergency distress triggered by user voice activation. Full clinical vitals assessment and stabilization needed."
   };
@@ -524,6 +541,14 @@ You MUST respond strictly in valid JSON format with NO markdown code blocks (no 
     "Clear actionable step 2",
     "Clear actionable step 3"
   ],
+  "followUpQuestions": [
+    "What to ask the patient to narrow down the triage? (e.g. 'Is the bleeding spurting or steady?')",
+    "Are they experiencing numbness or tingling?"
+  ],
+  "vitalSignAlerts": [
+    "Watch out for sudden drop in heart rate",
+    "Check for pale or bluish skin"
+  ],
   "specialtiesNeeded": ["Trauma ICU", "Specialty 2"],
   "triageSummary": "Short 1-2 sentence clinical summary for hospital triage team",
   "recommendedHospitalName": "Exact name of best recommended hospital from the list",
@@ -555,6 +580,8 @@ You MUST respond strictly in valid JSON format with NO markdown code blocks (no 
         severity: ["CRITICAL", "HIGH", "MODERATE", "MILD"].includes(parsed.severity) ? parsed.severity : "HIGH",
         possibleDiseasesOrInjuries: Array.isArray(parsed.possibleDiseasesOrInjuries) ? parsed.possibleDiseasesOrInjuries : [],
         firstAidInstructions: instructions,
+        followUpQuestions: Array.isArray(parsed.followUpQuestions) ? parsed.followUpQuestions : [],
+        vitalSignAlerts: Array.isArray(parsed.vitalSignAlerts) ? parsed.vitalSignAlerts : [],
         specialtiesNeeded: Array.isArray(parsed.specialtiesNeeded) ? parsed.specialtiesNeeded : [],
         triageSummary: parsed.triageSummary || "Emergency triage initiated. Immediate vitals assessment recommended.",
         confidence,
@@ -601,7 +628,7 @@ You MUST respond strictly in valid JSON format with NO markdown code blocks (no 
   };
 }
 
-// api/incidents.ts
+// api/_incidents.ts
 var TRANSITIONS = {
   DETECTED: ["PROBING", "DISPATCHED", "CANCELLED"],
   PROBING: ["DISPATCHED", "CANCELLED"],
@@ -691,6 +718,7 @@ function normalizePhone(raw) {
 function isValidE164(p) {
   return /^\+[1-9]\d{7,14}$/.test(p);
 }
+var isSigningSecretConfigured = () => !!(process.env.INCIDENT_SIGNING_SECRET || process.env.JWT_SECRET);
 var processSecret = null;
 var secret = () => {
   const configured = process.env.INCIDENT_SIGNING_SECRET || process.env.JWT_SECRET;
@@ -783,9 +811,7 @@ var IncidentEngine = class {
    */
   async dispatch(incident, baseUrl) {
     if (incident.state === "DISPATCHED" || incident.state === "ACKED") return incident;
-    const isDangerPathway = incident.kind === "MANUAL_SOS" || incident.kind === "SAFETY_WORD";
-    const isMedicalPathway = incident.kind === "VOICE_HELP" || incident.kind === "MEDICAL" || incident.kind === "CRASH";
-    if (isDangerPathway) {
+    if (incident.kind === "MANUAL_SOS" || incident.kind === "SAFETY_WORD") {
       const rawPoliceNumber = this.deps.policeNumber ?? process.env.POLICE_NUMBER;
       if (rawPoliceNumber) {
         const police = normalizePhone(rawPoliceNumber);
@@ -796,7 +822,7 @@ var IncidentEngine = class {
         console.warn(`[IncidentEngine] POLICE_NUMBER is not configured; dispatching to personal emergency contacts only (incident ${incident.id}).`);
       }
     }
-    if (isMedicalPathway) {
+    if (incident.kind === "VOICE_HELP" || incident.kind === "MEDICAL" || incident.kind === "CRASH") {
       const rawHospitalNumber = this.deps.hospitalNumber ?? process.env.HOSPITAL_NUMBER;
       if (rawHospitalNumber) {
         const hosp = normalizePhone(rawHospitalNumber);
@@ -859,6 +885,24 @@ var IncidentEngine = class {
     incident.updatedAt = this.now();
     await this.deps.store.save(incident);
     this.emit(incident);
+    const summaryLog = {
+      incidentId: incident.id,
+      kind: incident.kind,
+      contacts: incident.contacts.length,
+      deliveries: incident.deliveries.map((d) => ({
+        channel: d.channel,
+        to: d.to,
+        status: d.status,
+        error: d.error
+      }))
+    };
+    if (incident.deliveries.length === 0) {
+      console.error(`[IncidentEngine] DISPATCH SUMMARY: 0 Twilio API calls attempted. No deliveries created.`);
+    } else if (incident.deliveries.every((d) => d.status === "failed")) {
+      console.error(`[IncidentEngine] DISPATCH SUMMARY: Twilio API calls attempted and rejected. Details: ${JSON.stringify(summaryLog)}`);
+    } else {
+      console.log(`[IncidentEngine] DISPATCH SUMMARY: Dispatch successful. Details: ${JSON.stringify(summaryLog)}`);
+    }
     if (incident.deliveries.length > 0 && incident.deliveries.every((d) => d.status === "failed")) {
       console.error(`[IncidentEngine] FATAL: All dispatch channels failed for incident ${incident.id}`);
       if (this.deps.io) {
@@ -941,28 +985,21 @@ var IncidentEngine = class {
 function buildSmsBody(incident, baseUrl) {
   const who = incident.patient.name?.trim() || incident.patient.phone || "A RoadSOS user";
   const kind = incident.kind === "CRASH" ? "possible road crash detected" : incident.kind === "SAFETY_WORD" ? "silent distress signal" : incident.kind === "MEDICAL" ? "medical emergency" : incident.kind === "VOICE_HELP" ? "urgent HELP distress signal" : "emergency";
-  const conf = incident.confidence ? ` (${incident.confidence.toLowerCase()} confidence)` : "";
-  const staticLoc = incident.address ? `${incident.address}
-${mapsLink(incident.location)}` : mapsLink(incident.location);
-  const liveTracking = `Live Tracking: ${baseUrl}/track/${incident.id}?t=${incident.reportToken}`;
-  const reportUrl = `${baseUrl}/api/incidents/${incident.id}/report.pdf?t=${incident.reportToken}`;
+  const conf = incident.confidence ? ` (${incident.confidence.toLowerCase()} conf)` : "";
+  const addressShort = incident.address ? incident.address.length > 50 ? incident.address.slice(0, 47) + "..." : incident.address : "";
+  const staticLoc = addressShort ? `${addressShort} - ${mapsLink(incident.location)}` : mapsLink(incident.location);
+  const liveTracking = `Live Status & Med Report: ${baseUrl}/track/${incident.id}?t=${incident.reportToken}`;
   const med = [
     incident.patient.bloodGroup && `Blood: ${incident.patient.bloodGroup}`,
-    incident.patient.allergies && `Allergies: ${incident.patient.allergies}`,
-    incident.patient.conditions && `Conditions: ${incident.patient.conditions}`
+    incident.patient.allergies && `Allergies: ${incident.patient.allergies.slice(0, 30)}`
   ].filter(Boolean).join(" | ");
-  const aiCondition = incident.aiMedicalAnalysis ? `Assessment: ${incident.aiMedicalAnalysis.condition} [${incident.aiMedicalAnalysis.severity}]` : void 0;
-  const nearestHosp = incident.recommendedHospitals && incident.recommendedHospitals.length > 0 ? `Recommended Hospital: ${incident.recommendedHospitals[0].name} (${incident.recommendedHospitals[0].distanceKm} km)` : void 0;
   return [
-    `ROADSOS DISTRESS ALERT: ${who} \u2014 ${kind}${conf}.`,
-    aiCondition,
-    `Location (Static): ${staticLoc}`,
+    `ROADSOS ALERT: ${who} - ${kind}${conf}.`,
+    med ? `Med: ${med}` : void 0,
+    `Loc: ${staticLoc}`,
     liveTracking,
-    med,
-    nearestHosp,
-    `Full report: ${reportUrl}`,
-    `Reply ACK to confirm you are responding.`
-  ].filter(Boolean).join("\n\n");
+    `Reply ACK to confirm.`
+  ].filter(Boolean).join("\n");
 }
 function buildCallScript(incident) {
   const who = incident.patient.name?.trim() || "a Road S O S user";
@@ -1217,6 +1254,40 @@ function createIncidentRouter(engine, store, io2) {
     }
     res.type("text/xml").send(twiml.toString());
   });
+  router2.post("/api/admin/test-dispatch", async (req, res) => {
+    const secret2 = process.env.ADMIN_TEST_SECRET;
+    if (!secret2 || req.headers["x-admin-test-secret"] !== secret2) {
+      return res.status(403).json({ error: "Forbidden: Invalid or missing X-Admin-Test-Secret header. Set ADMIN_TEST_SECRET in your backend environment variables." });
+    }
+    const testContact = req.body.testContact;
+    if (!testContact) {
+      return res.status(400).json({ error: 'Missing testContact in JSON body (e.g., { "testContact": "+1234567890" })' });
+    }
+    try {
+      const deviceToken = req.header("x-device-token") || `admin-test-device-${Date.now()}`;
+      const incident = await engine.create({
+        deviceToken,
+        kind: "SAFETY_WORD",
+        reason: "Admin Smoke Test",
+        patient: { name: "Test User" },
+        contacts: [testContact],
+        location: { lat: 12.9716, lng: 77.5946 },
+        address: "Test Location, Bangalore"
+      });
+      const proto = req.headers["x-forwarded-proto"] || req.protocol;
+      const host = req.headers.host;
+      const baseUrl = `${proto}://${host}`;
+      const dispatched = await engine.dispatch(incident, baseUrl);
+      return res.json({
+        message: "Test dispatch executed.",
+        incidentId: dispatched.id,
+        deliveries: dispatched.deliveries
+      });
+    } catch (e) {
+      console.error("[Test Dispatch Error]", e);
+      return res.status(500).json({ error: "Failed to dispatch test incident", details: e.message });
+    }
+  });
   io2?.on("connection", (socket) => {
     socket.on("incident:join", (incidentId) => {
       if (typeof incidentId === "string" && incidentId.length < 64) socket.join(`incident:${incidentId}`);
@@ -1228,7 +1299,7 @@ function createIncidentRouter(engine, store, io2) {
   return router2;
 }
 
-// api/drivingMode.ts
+// api/_drivingMode.ts
 var import_express2 = __toESM(require("express"), 1);
 var import_jsonwebtoken = __toESM(require("jsonwebtoken"), 1);
 var import_zod2 = require("zod");
@@ -1478,7 +1549,7 @@ function createDrivingRouter(deps) {
   return router2;
 }
 
-// api/traffic.ts
+// api/_traffic.ts
 var import_express3 = __toESM(require("express"), 1);
 var import_zod3 = require("zod");
 var import_crypto2 = __toESM(require("crypto"), 1);
@@ -1509,6 +1580,42 @@ var DEFAULT_FREEFLOW_SPEEDS = {
 var segmentAggregates = /* @__PURE__ */ new Map();
 var getGeoRoom = (lat, lng) => `geo:${Math.floor(lat * 10)}:${Math.floor(lng * 10)}`;
 var hashSession = (s) => import_crypto2.default.createHash("sha256").update(s).digest("hex").slice(0, 16);
+var weatherCache = /* @__PURE__ */ new Map();
+async function getWeatherForLocation(lat, lng, io2) {
+  const gridKey = `weather:${Math.round(lat * 10)}:${Math.round(lng * 10)}`;
+  const now = Date.now();
+  const cached = weatherCache.get(gridKey);
+  if (cached && now - cached.timestamp < 10 * 60 * 1e3) {
+    return cached.data;
+  }
+  try {
+    const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,precipitation&timezone=auto`);
+    const data = await res.json();
+    if (data && data.current) {
+      const precip = data.current.precipitation || 0;
+      const isWet = precip > 1.5;
+      const parsedData = {
+        temperature: data.current.temperature_2m,
+        humidity: data.current.relative_humidity_2m,
+        precipitation: precip,
+        isWet,
+        summary: `Current temperature is ${data.current.temperature_2m}\xB0C, humidity is ${data.current.relative_humidity_2m}%, precipitation is ${precip}mm.`
+      };
+      const previouslyWet = cached?.data.isWet;
+      weatherCache.set(gridKey, { data: parsedData, timestamp: now });
+      if (io2 && cached && previouslyWet !== isWet) {
+        io2.to(getGeoRoom(lat, lng)).emit("traffic:update", {
+          type: "weather",
+          data: parsedData
+        });
+      }
+      return parsedData;
+    }
+  } catch (e) {
+    console.error("[Traffic] Weather fetch failed:", e);
+  }
+  return cached?.data || { temperature: 0, humidity: 0, precipitation: 0, isWet: false, summary: "Weather data unavailable." };
+}
 function classifyCongestion(avgSpeed, freeFlow) {
   const ratio = avgSpeed / freeFlow;
   if (ratio >= 0.75) return "Low";
@@ -1634,10 +1741,11 @@ function createTrafficRouter({ supabase: supabase4, io: io2 }) {
       const lng = parseFloat(req.query.lng);
       const radiusKm = parseFloat(req.query.radiusKm) || 2.5;
       if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ error: "Invalid lat/lng" });
-      const [staticIncidents, crowdReports, segments] = await Promise.all([
+      const [staticIncidents, crowdReports, segments, weatherData] = await Promise.all([
         fetchOverpassIncidents(lat, lng, radiusKm * 1e3),
         supabase4 ? supabase4.from("reported_incidents").select("*").gt("expires_at", (/* @__PURE__ */ new Date()).toISOString()).then((r) => r.data || []) : Promise.resolve([]),
-        supabase4 ? supabase4.from("traffic_segments").select("*").then((r) => r.data || []) : Promise.resolve([])
+        supabase4 ? supabase4.from("traffic_segments").select("*").then((r) => r.data || []) : Promise.resolve([]),
+        getWeatherForLocation(lat, lng, io2)
       ]);
       let routes = [];
       try {
@@ -1647,7 +1755,7 @@ function createTrafficRouter({ supabase: supabase4, io: io2 }) {
           { dlat: lat - 0.018, dlng: lng }
         ];
         const routeResults = await Promise.allSettled(probes.map(async (p) => {
-          const url = `${OSRM_URL}/route/v1/driving/${lng},${lat};${p.dlng},${p.dlat}?overview=false&steps=true`;
+          const url = `${OSRM_URL}/route/v1/driving/${lng},${lat};${p.dlng},${p.dlat}?overview=false&steps=true&annotations=nodes`;
           const r = await fetch(url, { signal: AbortSignal.timeout(5e3) });
           const d = await r.json();
           const route = d.routes?.[0];
@@ -1657,7 +1765,27 @@ function createTrafficRouter({ supabase: supabase4, io: io2 }) {
           const durMin = Math.round(route.duration / 60);
           const speedKmh = Math.round(route.distance / 1e3 / ((route.duration || 1) / 3600));
           const freeFlow = DEFAULT_FREEFLOW_SPEEDS["primary"] || 50;
-          const matchedSeg = segments.find((s) => s.way_id && s.avg_speed_kmh);
+          const routeNodes = route.legs?.[0]?.annotation?.nodes || [];
+          const routeNodesSet = new Set(routeNodes.map((n) => n.toString()));
+          let matchedSeg = null;
+          let minGridDist = Infinity;
+          for (const s of segments) {
+            if (!s.way_id || !s.avg_speed_kmh) continue;
+            if (routeNodesSet.has(s.way_id)) {
+              matchedSeg = s;
+              break;
+            }
+            if (s.way_id.startsWith("grid:")) {
+              const parts = s.way_id.split(":");
+              const cellLat = parseFloat(parts[1]);
+              const cellLng = parseFloat(parts[2]);
+              const dist = haversineKm(lat, lng, cellLat, cellLng);
+              if (dist < minGridDist && dist < 1) {
+                minGridDist = dist;
+                matchedSeg = s;
+              }
+            }
+          }
           const effectiveSpeed = matchedSeg ? matchedSeg.avg_speed_kmh : speedKmh;
           const congestion = classifyCongestion(effectiveSpeed, freeFlow);
           const dataSource = matchedSeg && matchedSeg.sample_count >= 3 ? "live" : "estimated";
@@ -1700,6 +1828,19 @@ function createTrafficRouter({ supabase: supabase4, io: io2 }) {
         confirmCount: r.confirm_count
       }));
       const allIncidents = [...staticIncidents, ...crowdIncidents].sort((a, b) => parseFloat(a.distKm || "99") - parseFloat(b.distKm || "99"));
+      if (weatherData && weatherData.isWet) {
+        allIncidents.unshift({
+          id: "weather_wet",
+          label: `\u{1F327}\uFE0F Wet Road Advisory`,
+          type: "warning",
+          source: "weather",
+          lat,
+          lng,
+          distKm: "0.0",
+          name: "Local Area",
+          confirmCount: 0
+        });
+      }
       const highRoutes = routes.filter((r) => r.congestion === "High").length;
       const modRoutes = routes.filter((r) => r.congestion === "Moderate").length;
       let congestionLevel = "Low";
@@ -1804,13 +1945,17 @@ var import_prompts = require("@langchain/core/prompts");
 var import_runnables = require("@langchain/core/runnables");
 var import_chat_history = require("@langchain/core/chat_history");
 import_dotenv.default.config();
+if (process.env.NODE_ENV === "production" && !isSigningSecretConfigured()) {
+  console.error("FATAL: INCIDENT_SIGNING_SECRET (or JWT_SECRET) is required in production to sign medical-report/QR links.");
+  process.exit(1);
+}
 var app = (0, import_express5.default)();
 var httpServer = (0, import_http.createServer)(app);
 var socketAllowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim()) : process.env.PUBLIC_BASE_URL ? [process.env.PUBLIC_BASE_URL] : process.env.NODE_ENV === "production" ? [] : "*";
 var io = new import_socket.Server(httpServer, {
   cors: { origin: socketAllowedOrigins }
 });
-var PORT = 3e3;
+var PORT = Number(process.env.PORT || 3e3);
 app.use(import_express5.default.json());
 app.use(import_express5.default.urlencoded({ extended: true }));
 app.use((0, import_cookie_parser.default)());
@@ -1838,7 +1983,7 @@ app.use("/api/", apiLimiter);
 app.use("/api/ai/", aiLimiter);
 app.io = io;
 if (process.env.SUPABASE_URL && process.env.JWT_SECRET) {
-  Promise.resolve().then(() => (init_auth(), auth_exports)).then(({ default: authRoutes }) => app.use("/api/auth", authRoutes)).catch((e) => console.error("[Auth] failed to mount:", e.message));
+  Promise.resolve().then(() => (init_auth2(), auth_exports)).then(({ default: authRoutes }) => app.use("/api/auth", authRoutes)).catch((e) => console.error("[Auth] failed to mount:", e.message));
 }
 app.get("/api/health", (req, res) => {
   const expectedToken = process.env.HEALTH_PING_TOKEN;
@@ -2006,19 +2151,6 @@ var generateAIResponse = async (prompt, isHighPriority = false) => {
   return localFallbackTip;
 };
 var aiMemory = new import_chat_history.InMemoryChatMessageHistory();
-var currentWeatherData = "Weather data unavailable.";
-async function updateWeather() {
-  try {
-    const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=12.9716&longitude=77.5946&current=temperature_2m,relative_humidity_2m,precipitation&timezone=Asia%2FKolkata");
-    const data = await res.json();
-    if (data && data.current) {
-      currentWeatherData = `Current temperature is ${data.current.temperature_2m}\xB0C, humidity is ${data.current.relative_humidity_2m}%, precipitation is ${data.current.precipitation}mm.`;
-    }
-  } catch (e) {
-  }
-}
-updateWeather();
-setInterval(updateWeather, 10 * 60 * 1e3);
 var langchainConversation = null;
 var getLangchainConversation = () => {
   if (!langchainConversation) {
@@ -2034,12 +2166,19 @@ var getLangchainConversation = () => {
 
 Your specialized domains of expertise are climate, traffic conditions, vehicle specifications, rules, regulations, and general knowledge. 
 
+STRICT QA COMPLIANCE RULES:
+- ZERO HALLUCINATIONS: Do not guess or invent facts, especially regarding medical advice, emergency protocols, or legal regulations. If you do not know, state clearly that you do not know and advise seeking professional help.
+- NO TOXICITY/BIAS: Ensure responses are universally accessible, completely free of biased, harmful, discriminatory, or toxic language. Treat all user inputs and dialects with equal respect.
+- LOOP PREVENTION: Do not repeat identical questions if the user is struggling to respond. Provide a clear, actionable terminal instruction.
+- NO UNVERIFIED MEDICAL ADVICE: If asked about serious injuries, only provide basic first-aid steps if absolutely certain, otherwise instruct them to wait for emergency services.
+
 IMPORTANT SYSTEM CONTEXT:
 - The current time in India (IST) is: {current_time}
 - Current Weather Information: {weather_info}
 - User Location context: {location_context}
 - Nearest Hospital context: {nearest_hospital_context}
-Use this context to accurately answer questions about the current time, weather, current location, or navigating to the nearest hospital. If the user asks for their current location, tell them their latitude and longitude based on the context. If they ask for route navigation or the nearest hospital, explicitly use the Nearest Hospital context (which integrates with existing Places API functions) to tell them the hospital name and that route navigation is available.
+- Medical Knowledge Base Context: {medical_context}
+Use this context to accurately answer questions about the current time, weather, current location, navigating to the nearest hospital, or providing first aid instructions based strictly on the Medical Knowledge Base Context if available. If the user asks for their current location, tell them their latitude and longitude based on the context. If they ask for route navigation or the nearest hospital, explicitly use the Nearest Hospital context (which integrates with existing Places API functions) to tell them the hospital name and that route navigation is available. If providing medical advice, ground it solely in the provided Medical Knowledge Base Context.
 
 Because your output is fed directly into a Text-to-Speech engine, you MUST strictly adhere to the following voice-first rules:
 
@@ -2120,7 +2259,10 @@ app.post("/api/ai/ask", async (req, res) => {
     const location = parsed.location;
     let location_context = "Location not provided by user.";
     let nearest_hospital_context = "Cannot determine nearest hospital without user location.";
+    let weather_info = "Weather data unavailable without location.";
     if (location) {
+      const weather = await getWeatherForLocation(location.lat, location.lng);
+      weather_info = weather.summary;
       location_context = `Latitude: ${location.lat}, Longitude: ${location.lng}`;
       if (question.toLowerCase().includes("hospital") || question.toLowerCase().includes("clinic") || question.toLowerCase().includes("navigate") || question.toLowerCase().includes("nearest")) {
         try {
@@ -2180,6 +2322,18 @@ app.post("/api/ai/ask", async (req, res) => {
         }
         return res.json({ answer: trainedAns });
       }
+      const isMedicalQuery = question.toLowerCase().match(/(first aid|hurt|bleed|pain|accident|crash|headache|broken|medical|emergency)/);
+      let medical_context = "No medical context provided.";
+      if (isMedicalQuery) {
+        try {
+          const results = await retrieveContext(question, "medical");
+          if (results.length > 0) {
+            medical_context = results.map((r) => r.content).join("\n");
+          }
+        } catch (e) {
+          console.error("Failed to retrieve medical context:", e);
+        }
+      }
       let chain = getLangchainConversation();
       if (stream) {
         res.setHeader("Content-Type", "text/event-stream");
@@ -2190,9 +2344,10 @@ app.post("/api/ai/ask", async (req, res) => {
             {
               input: question,
               current_time: (/* @__PURE__ */ new Date()).toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
-              weather_info: currentWeatherData,
+              weather_info,
               location_context,
-              nearest_hospital_context
+              nearest_hospital_context,
+              medical_context
             },
             { configurable: { sessionId: "default" } }
           );
@@ -2218,9 +2373,10 @@ app.post("/api/ai/ask", async (req, res) => {
           {
             input: question,
             current_time: (/* @__PURE__ */ new Date()).toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
-            weather_info: currentWeatherData,
+            weather_info,
             location_context,
-            nearest_hospital_context
+            nearest_hospital_context,
+            medical_context
           },
           { configurable: { sessionId: "default" } }
         );
@@ -2247,7 +2403,8 @@ IMPORTANT SYSTEM CONTEXT:
 - Current Weather Information: {weather_info}
 - User Location context: {location_context}
 - Nearest Hospital context: {nearest_hospital_context}
-Use this context to accurately answer questions about the current time, weather, current location, or navigating to the nearest hospital. If the user asks for their current location, tell them their latitude and longitude based on the context. If they ask for route navigation or the nearest hospital, explicitly use the Nearest Hospital context (which integrates with existing Places API functions) to tell them the hospital name and that route navigation is available.
+- Medical Knowledge Base Context: {medical_context}
+Use this context to accurately answer questions about the current time, weather, current location, navigating to the nearest hospital, or providing first aid instructions based strictly on the Medical Knowledge Base Context if available. If the user asks for their current location, tell them their latitude and longitude based on the context. If they ask for route navigation or the nearest hospital, explicitly use the Nearest Hospital context (which integrates with existing Places API functions) to tell them the hospital name and that route navigation is available. If providing medical advice, ground it solely in the provided Medical Knowledge Base Context.
 
 Because your output is fed directly into a Text-to-Speech engine, you MUST strictly adhere to the following voice-first rules:
 
@@ -2273,9 +2430,10 @@ Because your output is fed directly into a Text-to-Speech engine, you MUST stric
               {
                 input: question,
                 current_time: (/* @__PURE__ */ new Date()).toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
-                weather_info: currentWeatherData,
+                weather_info,
                 location_context,
-                nearest_hospital_context
+                nearest_hospital_context,
+                medical_context
               },
               { configurable: { sessionId: "default" } }
             );
@@ -2363,6 +2521,73 @@ app.post("/api/medical/analyze-and-recommend", async (req, res) => {
     res.status(400).json({ error: e?.message || "Medical analysis failed" });
   }
 });
+app.post("/api/ai/voice-stream", aiLimiter, async (req, res) => {
+  try {
+    const { transcript, socketId } = import_zod5.z.object({
+      transcript: import_zod5.z.string().min(1),
+      socketId: import_zod5.z.string().min(1)
+    }).parse(req.body);
+    const safeTranscript = (0, import_xss5.default)(transcript);
+    const trainedAns = findTrainedAnswer(safeTranscript);
+    if (trainedAns) {
+      console.log(`[Voice Stream] Intercepted and answered directly using trained Q&As for: "${safeTranscript}"`);
+      io.to(socketId).emit("voice:chunk", trainedAns);
+      io.to(socketId).emit("voice:end", { mode: "TRAINING", original_transcript: safeTranscript });
+      return res.json({ success: true });
+    }
+    const prompt = `
+      You are a high-speed emergency response AI.
+      Analyze: "${safeTranscript}"
+      
+      OUTPUT FORMAT:
+      [MODE: EMERGENCY/TRAINING/GENERAL]
+      Content: [Short, direct response. Under 30 words.]
+
+      Context: ${KNOWLEDGE_BASE_CONTEXT}
+    `;
+    const ai = getAI2();
+    const stream = await ai.models.generateContentStream({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        temperature: 0
+      }
+    });
+    res.json({ success: true });
+    let fullText = "";
+    try {
+      for await (const chunk of stream) {
+        if (chunk.text) {
+          fullText += chunk.text;
+          const cleanChunk = chunk.text.replace(/\[MODE: .*?\]/, "").replace(/Content:/, "");
+          if (cleanChunk.trim()) {
+            io.to(socketId).emit("voice:chunk", cleanChunk);
+          }
+        }
+      }
+      let mode = "GENERAL";
+      if (fullText.includes("[MODE: EMERGENCY]")) mode = "EMERGENCY";
+      else if (fullText.includes("[MODE: TRAINING]")) mode = "TRAINING";
+      io.to(socketId).emit("voice:end", { mode, original_transcript: safeTranscript });
+    } catch (streamErr) {
+      console.error("Stream generation error:", streamErr);
+      io.to(socketId).emit("voice:error", { error: "Stream failed mid-generation" });
+    }
+  } catch (error) {
+    if (error?.message?.includes("quota") || error?.message?.includes("429")) {
+      console.log("\u26A0\uFE0F AI Error: Quota.");
+    } else {
+      console.log("\u26A0\uFE0F AI Error.");
+    }
+    const { socketId, transcript } = req.body;
+    if (socketId) {
+      const fb = "Ensure safety, check breathing and pulse, apply firm pressure to wounds to stop bleeding, and wait for emergency services.";
+      io.to(socketId).emit("voice:chunk", fb);
+      io.to(socketId).emit("voice:end", { mode: "GENERAL", original_transcript: transcript ? (0, import_xss5.default)(transcript) : "" });
+    }
+    if (!res.headersSent) res.status(500).json({ error: "Generation failed" });
+  }
+});
 app.post("/api/ai/voice-process", async (req, res) => {
   try {
     const { transcript } = import_zod5.z.object({ transcript: import_zod5.z.string().min(1) }).parse(req.body);
@@ -2412,6 +2637,15 @@ app.post("/api/ai/voice-agent", async (req, res) => {
     const cleanTranscript = safeTranscript.trim();
     if (!cleanTranscript || cleanTranscript.length === 0) {
       return res.json({ text: "I'm listening." });
+    }
+    let weather_info = "Weather data unavailable.";
+    if (location && location.lat && location.lng) {
+      try {
+        const weather = await getWeatherForLocation(location.lat, location.lng);
+        weather_info = weather.summary;
+      } catch (e) {
+        console.error("Failed to fetch weather in voice-agent:", e);
+      }
     }
     const executeVoiceAgent = async () => {
       try {
@@ -2496,14 +2730,27 @@ If the user asks a general question, just answer it directly. Only use tools whe
         if (calls && calls.length > 0) {
           return res.json({ toolCall: { name: calls[0].name, args: calls[0].args }, text: "Executing command." });
         }
+        const isMedicalQuery = cleanTranscript.toLowerCase().match(/(first aid|hurt|bleed|pain|accident|crash|headache|broken|medical|emergency)/);
+        let medical_context = "No medical context provided.";
+        if (isMedicalQuery) {
+          try {
+            const results = await retrieveContext(cleanTranscript, "medical");
+            if (results.length > 0) {
+              medical_context = results.map((r) => r.content).join("\n");
+            }
+          } catch (e) {
+            console.error("Failed to retrieve medical context in voice-agent:", e);
+          }
+        }
         const chain = getLangchainConversation();
         const lcResponse = await chain.invoke(
           {
             input: cleanTranscript,
             current_time: (/* @__PURE__ */ new Date()).toLocaleString("en-US", { timeZone: "Asia/Kolkata", timeStyle: "long", dateStyle: "full" }),
-            weather_info: currentWeatherData,
+            weather_info,
             location_context: location ? JSON.stringify(location) : "Unknown",
-            nearest_hospital_context: "Not provided in this context"
+            nearest_hospital_context: "Not provided in this context",
+            medical_context
           },
           { configurable: { sessionId: "voice-agent" } }
         );
